@@ -110,6 +110,26 @@ const parseProfiles = (value: string | undefined): readonly string[] => {
   return profileIds;
 };
 
+const isLoopbackHost = (host: string): boolean => {
+  const normalized = host.toLowerCase();
+  if (
+    normalized === "localhost" ||
+    normalized === "localhost." ||
+    normalized === "::1" ||
+    normalized.startsWith("::1%")
+  ) {
+    return true;
+  }
+  const octets = normalized.split(".");
+  return (
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.every(
+      (octet) => /^(0|[1-9][0-9]{0,2})$/u.test(octet) && Number(octet) <= 255,
+    )
+  );
+};
+
 export const loadServiceConfig = (
   environment: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
@@ -231,6 +251,11 @@ export const loadServiceConfig = (
   if (result.comfyUI.webSocketUrl && !result.comfyUI.baseUrl) {
     throw new ConfigurationError(
       "COMFYUI_BASE_URL is required when COMFYUI_WS_URL is configured",
+    );
+  }
+  if (!isLoopbackHost(result.host) && result.authToken === undefined) {
+    throw new ConfigurationError(
+      "VIDEOHARNESS_AUTH_TOKEN is required when VIDEOHARNESS_HOST is not loopback",
     );
   }
 

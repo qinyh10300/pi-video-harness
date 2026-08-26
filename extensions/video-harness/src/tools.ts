@@ -27,6 +27,7 @@ export type VideoJobInput =
       readonly action: "wait";
       readonly pipelineId: string;
       readonly after?: number;
+      readonly limit?: number;
       readonly waitMs?: number;
     }
   | ({
@@ -124,7 +125,13 @@ export const createVideoHarnessTools = (
             action: { const: "wait" },
             pipelineId: { type: "string", minLength: 1 },
             after: { type: "integer", minimum: 0 },
-            waitMs: { type: "integer", minimum: 0, maximum: 30_000 },
+            limit: { type: "integer", minimum: 1, maximum: 200 },
+            waitMs: {
+              type: "integer",
+              minimum: 0,
+              maximum: 30_000,
+              default: 25_000,
+            },
           },
         },
         {
@@ -208,7 +215,8 @@ export const createVideoHarnessTools = (
         case "wait":
           return await client.getEvents(input.pipelineId, {
             ...(input.after === undefined ? {} : { after: input.after }),
-            ...(input.waitMs === undefined ? {} : { waitMs: input.waitMs }),
+            ...(input.limit === undefined ? {} : { limit: input.limit }),
+            waitMs: input.waitMs ?? 25_000,
             ...(signal === undefined ? {} : { signal }),
           });
         case "result":

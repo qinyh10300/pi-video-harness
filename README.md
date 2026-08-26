@@ -22,10 +22,14 @@ API、ComfyUI 和 Wan2.2 连接成一条可恢复、可观测、可追踪的首�
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm build
-pnpm test
+pnpm check
 pnpm dev
 ```
+
+`pnpm dev` 和构建后的 `pnpm start` 都会在文件存在时自动加载仓库根目录的
+`.env`；不创建 `.env` 则使用安全默认值。需要覆盖默认值时可先执行
+`cp .env.example .env`，但不要把真实密钥提交到 Git。启动成功后服务会打印监听地址、API 版本、Phase、`offline_fake`
+执行模式、默认 Profile 和鉴权状态，不打印 Token。
 
 在另一个终端确认服务和外部后端状态：
 
@@ -40,15 +44,19 @@ Pipeline，再依次通过计划、选图、选视频预览和最终验收四个
 `jq`；所有产物都是本地测试数据。
 
 ```bash
+RUN_ID="$(date +%s)-$$-${RANDOM:-0}"
+
 PLAN=$(curl -sS -X POST http://127.0.0.1:8787/v1/plans \
   -H 'content-type: application/json' \
-  -d '{"brief":"A paper boat moves slowly across a still pond.","dryRun":true,"idempotencyKey":"readme-plan-1"}')
+  -d "$(jq -n --arg key "readme-plan-$RUN_ID" \
+    '{brief:"A paper boat moves slowly across a still pond.",dryRun:true,idempotencyKey:$key}')")
 
 VIEW=$(curl -sS -X POST http://127.0.0.1:8787/v1/pipelines \
   -H 'content-type: application/json' \
   -d "$(jq -n --arg planId "$(jq -r .planId <<<"$PLAN")" \
     --arg expectedPlanHash "$(jq -r .planHash <<<"$PLAN")" \
-    '{planId:$planId,expectedPlanHash:$expectedPlanHash,idempotencyKey:"readme-pipeline-1"}')")
+    --arg key "readme-pipeline-$RUN_ID" \
+    '{planId:$planId,expectedPlanHash:$expectedPlanHash,idempotencyKey:$key}')")
 
 DECISION_NUMBER=0
 decide_open_gate() {
@@ -58,7 +66,7 @@ decide_open_gate() {
   GATE_ID=$(jq -r '.gates[] | select(.status == "open") | .gateId' <<<"$VIEW")
   VERSION=$(jq -r '.gates[] | select(.status == "open") | .expectedPipelineVersion' <<<"$VIEW")
   BODY=$(jq -n --arg action "$ACTION" --arg selected "$SELECTED" \
-    --argjson version "$VERSION" --arg key "readme-decision-$DECISION_NUMBER" \
+    --argjson version "$VERSION" --arg key "readme-decision-$RUN_ID-$DECISION_NUMBER" \
     '{action:$action,expectedPipelineVersion:$version,idempotencyKey:$key}
      + if $selected == "" then {} else {selectedArtifactId:$selected} end')
   VIEW=$(curl -sS -X POST \
@@ -73,13 +81,22 @@ decide_open_gate approve
 jq '{status:.pipeline.status}' <<<"$VIEW"
 curl -sS \
   "http://127.0.0.1:8787/v1/pipelines/$(jq -r .pipeline.pipelineId <<<"$VIEW")/artifacts" \
-  | jq '{artifacts:[.artifacts[] | {kind,mimeType}]}'
+  | jq '{pipelineStatus,resultReady,acceptedArtifactIds,
+         artifacts:[.artifacts[] | {kind,mimeType,current,accepted,contentPath}]}'
 ```
 
 最终状态应为 `completed`。`video_final` 的 MIME 是
 `application/vnd.pi-video-harness.fake-video+json`；这是可重复的测试契约，不能当作可播放视频。如果设置了
 `VIDEOHARNESS_AUTH_TOKEN`，所有 curl 请求还需添加
 `Authorization: Bearer <token>`。
+
+产物集合会保留当前项和已被 reroll/上游变更淘汰的历史项。`current`
+表示产物未被标记为 `superseded`；`accepted`
+只会在 Pipeline 已完成时标记当前且被最终验收的
+`video_final`，派生 poster/thumbnail 不会因此自动标记为已验收。`resultReady`
+等价于 `acceptedArtifactIds` 非空。`contentPath`
+是需要走同一鉴权的受控 API 相对路径，不是本地文件路径；客户端不应直接拼接或读取内部
+`storagePath`。
 
 ## v0.1 真实模型交付目标
 
@@ -230,15 +247,22 @@ metadata 为：
 
 ### 首版工具
 
-| 工具                 | 作用                                                                                   | 主要返回值                              |
-| -------------------- | -------------------------------------------------------------------------------------- | --------------------------------------- |
-| `video_generate`     | 编译计划，或用指定 Plan 创建不产生费用的 draft Pipeline                                | `planId`、`pipelineId`、下一 Gate、估算 |
-| `video_job`          | `status`、`wait`、`select`、`approve`、`request_changes`、`reroll`、`cancel`、`result` | 状态、候选、决定、错误或产物引用        |
-| `video_capabilities` | 查询图片/视频后端、模型、规格、Worker 和限制                                           | 能力与健康快照                          |
+| 工具                 | 作用                                                                                             | 主要返回值                              |
+| -------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| `video_generate`     | 编译计划，或用指定 Plan 创建不产生费用的 draft Pipeline                                          | `planId`、`pipelineId`、下一 Gate、估算 |
+| `video_job`          | `status`、`wait`、`select`、`approve`、`reject`、`request_changes`、`reroll`、`cancel`、`result` | 状态、候选、决定、错误或产物引用        |
+| `video_capabilities` | 查询图片/视频后端、模型、规格、Worker 和限制                                                     | 能力与健康快照                          |
 
-Phase A 的 `video_job.wait`
-使用有上限的 HTTP 长轮询。客户端停止等待不等于取消服务端 Pipeline；取消必须是显式动作。视频文件以绝对路径或受控 URL 返回，LLM 上下文只承载缩略图和结构化元数据，不嵌入 MP4
-base64。
+Phase A 的 `video_job.wait` 使用有上限的 HTTP 长轮询：省略 `waitMs`
+时工具默认等待 25 秒，可显式设置为 0–30000 ms；`limit`
+为 1–200，省略时服务端默认 100。每次响应的 `nextAfterSequence`
+应作为下一次调用的 `after`，这样只读取严格晚于该游标的事件。直接使用 HTTP
+Client 的 `getEvents` 时，省略 `waitMs` 仍是立即读取；请求长轮询时，transport
+timeout 至少比服务端等待窗口多 5 秒，避免 30 秒边界竞争。客户端停止等待不等于取消服务端的 Pipeline；取消必须是显式动作。`reject`
+会决定当前 Gate 并把 Pipeline 安全停在
+`needs_attention`，不会删除产物或等同于取消；Phase A 尚无 revision/resume
+API。视频内容通过受控 Artifact
+API 返回，LLM 上下文只承载缩略图和结构化元数据，不嵌入 MP4 base64。
 
 `video-director`
 Skill 计划负责把 Brief 编译为主体、环境、构图、起始姿态、动作、运镜和约束，并保留原始、自动编译与人工修改的所有 Prompt 版本。
@@ -256,24 +280,31 @@ WAL、幂等、Outbox、本地 Artifact Store、有界事件长轮询和恢复�
 
 ### HTTP 接口
 
-| 方法与路径                                               | Phase A | 作用                                                                 |
-| -------------------------------------------------------- | ------- | -------------------------------------------------------------------- |
-| `GET /v1/health`                                         | 已实现  | 服务、SQLite 和后端状态；真实后端显示 `not_configured`               |
-| `GET /v1/capabilities`                                   | 已实现  | 返回 Profile、规格、Gate 与安全限制                                  |
-| `POST /v1/assets`                                        | 未实现  | 未来上传并校验参考图或输入素材                                       |
-| `POST /v1/plans`                                         | 已实现  | 创建并持久化无费用计划                                               |
-| `GET /v1/plans/:planId`                                  | 已实现  | 读取计划和版本                                                       |
-| `POST /v1/pipelines`                                     | 已实现  | 创建 draft Pipeline 并打开计划 Gate；本路由不调用 Backend            |
-| `GET /v1/pipelines/:pipelineId`                          | 已实现  | 获取 Pipeline、StageRun 和 Gate 状态                                 |
-| `GET /v1/pipelines/:pipelineId/events`                   | 已实现  | 按 sequence 的有界长轮询，尚非 SSE                                   |
-| `POST /v1/pipelines/:pipelineId/gates/:gateId/decisions` | 已实现  | 选择、批准、拒绝或请求修改；Phase A 的请求修改停在 `needs_attention` |
-| `POST /v1/pipelines/:pipelineId/rerolls`                 | 已实现  | 对指定 Stage 发起可追踪重做                                          |
-| `POST /v1/pipelines/:pipelineId/cancel`                  | 已实现  | 幂等取消 Pipeline                                                    |
-| `GET /v1/pipelines/:pipelineId/artifacts`                | 已实现  | 获取 Fake 产物与 lineage                                             |
+| 方法与路径                                                    | Phase A | 作用                                                                 |
+| ------------------------------------------------------------- | ------- | -------------------------------------------------------------------- |
+| `GET /v1/health`                                              | 已实现  | 服务、SQLite 和后端状态；真实后端显示 `not_configured`               |
+| `GET /v1/capabilities`                                        | 已实现  | 返回 Profile、规格、Gate 与安全限制                                  |
+| `POST /v1/assets`                                             | 未实现  | 未来上传并校验参考图或输入素材                                       |
+| `POST /v1/plans`                                              | 已实现  | 创建并持久化无费用计划                                               |
+| `GET /v1/plans/:planId`                                       | 已实现  | 读取计划和版本                                                       |
+| `POST /v1/pipelines`                                          | 已实现  | 创建 draft Pipeline 并打开计划 Gate；本路由不调用 Backend            |
+| `GET /v1/pipelines/:pipelineId`                               | 已实现  | 获取 Pipeline、StageRun 和 Gate 状态                                 |
+| `GET /v1/pipelines/:pipelineId/events`                        | 已实现  | 按 sequence 的有界长轮询，尚非 SSE                                   |
+| `POST /v1/pipelines/:pipelineId/gates/:gateId/decisions`      | 已实现  | 选择、批准、拒绝或请求修改；Phase A 的请求修改停在 `needs_attention` |
+| `POST /v1/pipelines/:pipelineId/rerolls`                      | 已实现  | 对指定 Stage 发起可追踪重做                                          |
+| `POST /v1/pipelines/:pipelineId/cancel`                       | 已实现  | 幂等取消 Pipeline                                                    |
+| `GET /v1/pipelines/:pipelineId/artifacts`                     | 已实现  | 获取当前/历史产物、验收状态与 lineage                                |
+| `GET /v1/pipelines/:pipelineId/artifacts/:artifactId/content` | 已实现  | 校验完整性后读取原始内容，支持 SHA-256 ETag 条件请求                 |
 
 HTTP 响应回传 `x-request-id`；领域记录保留 `planId`、`pipelineId`、
 `stageId`、`gateId`、`runId` 和 `backendRequestId`。`piSessionId`
-尚未接入正式 Pi SDK 上下文。
+尚未接入正式 Pi SDK 上下文。事件接口的 query 使用 `afterSequence`、`limit` 和
+`waitMs`；Pi 工具分别映射为 `after`、`limit` 和 `waitMs`。产物集合额外返回
+`pipelineStatus`、`pipelineVersion`、`currentArtifactIds`、
+`supersededArtifactIds`、`acceptedArtifactIds` 与 `resultReady`，每项产物增加
+`current`、`accepted` 和受控 `contentPath`，但仍保留 lineage 所需的历史项。HTTP
+Client 另提供 `downloadArtifact`，返回字节、MIME、大小、ETag 和 request
+ID，而不暴露文件系统路径。
 
 ### 核心请求模型
 
@@ -428,7 +459,9 @@ Spark 统一内存、速度和可用 Workflow 仍需硬件 smoke test。首版�
 Phase A 的默认安全属性是：只监听 loopback、只加载 Fake
 Profile、付费 Provider 始终关闭、真实 Profile
 `productionReady: false`、模型回退关闭。启用 `VIDEOHARNESS_AUTH_TOKEN`
-后所有 API 需要 Bearer Token。不应把未配鉴权的开发服务暴露到公网；`data/`
+后所有 API（包括 Artifact 内容）需要 Bearer
+Token。非 loopback 监听必须同时配置强 Token，并置于受保护网络和 TLS reverse
+proxy 后；不得把未配鉴权的开发服务暴露到公网。`data/`
 可能包含 Brief、工作流状态和 Fake 产物，仍应按用户数据保护。
 
 - 当 Phase B 开始接入时，`OPENAI_API_KEY`
@@ -520,14 +553,14 @@ pi-video-harness/
 
 ## 配置设计
 
-仓库已提供
-`.env.example`。不复制它也可使用安全默认值启动；当前建议保持外部后端字段为空：
+仓库已提供 `.env.example`。`pnpm dev`/`pnpm start` 会自动读取存在的根目录
+`.env`；不复制它也可使用安全默认值启动。当前离线开发应保持鉴权和外部后端字段为空：
 
 ```dotenv
 VIDEOHARNESS_HOST=127.0.0.1
 VIDEOHARNESS_PORT=8787
 VIDEOHARNESS_DATA_DIR=./data
-VIDEOHARNESS_AUTH_TOKEN=replace-with-a-secret
+VIDEOHARNESS_AUTH_TOKEN=
 
 OPENAI_API_KEY=
 VIDEOHARNESS_ENABLE_CLOUD_IMAGE=false
@@ -551,6 +584,21 @@ Profile，不通过环境变量静默改变。内存、磁盘、超时和价格�
 Profile ID 当前仅为保留 ID；checkpoint、精度与 Workflow 哈希在 Phase
 C 冻结前不可用于生产。部署级开关只能阻止执行，不能放宽 Profile 中的人工 Gate。设置 Key、`VIDEOHARNESS_ENABLE_CLOUD_IMAGE=true`
 或 ComfyUI URL 不会将 Phase A 占位 Driver 变成真实 Driver。
+
+Phase A 已使用的配置是监听地址、端口、数据目录、Bearer
+Token、加载的 Profile 和默认 Profile；OpenAI/ComfyUI 字段目前只参与配置校验或禁用后端的健康信息，不会发起模型请求。
+`VIDEOHARNESS_OPENAI_TIMEOUT_MS`、`VIDEOHARNESS_OPENAI_MAX_AUTO_RETRIES`、
+`VIDEOHARNESS_PROMPT_LOG_MODE`、`VIDEOHARNESS_ARTIFACT_RETENTION_DAYS`、
+`VIDEOHARNESS_MAX_CONCURRENT_GENERATIONS`、`VIDEOHARNESS_MIN_FREE_DISK_GIB` 和
+`VIDEOHARNESS_MEMORY_RESERVE_GIB` 在 Phase
+A 会被解析和校验，但对应的真实 Provider 重试、日志策略、清理任务、通用并发调度及资源预检仍是 Phase
+B–D 待办，不能把填写这些值视为保护措施已经生效。
+
+空 `VIDEOHARNESS_AUTH_TOKEN` 只适合默认 loopback 开发。只要把
+`VIDEOHARNESS_HOST`
+改为非 loopback 地址，配置加载器就会拒绝空 Token；部署时仍必须设置高强度 Token，并在受保护网络中通过 TLS
+reverse proxy 对外提供 HTTPS。`videoharnessd`
+自身当前不会替部署层完成 TLS 终止。
 
 ## 开发路线图
 

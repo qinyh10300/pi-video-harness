@@ -5,6 +5,7 @@ import {
   FakeBackendOutcomeUnknownError,
   FakeImageBackend,
   FakeVideoBackend,
+  extractSingleVideoSeed,
   getFakeArtifactPayload,
   type FakeImageCommand,
   type FakeVideoCommand,
@@ -277,22 +278,23 @@ const artifactFolder = (kind: ArtifactKind): string => {
 const activeRunStatus = (status: StageRun["status"]): boolean =>
   !STAGE_RUN_TERMINAL_STATUSES.has(status);
 
-const selectedSeed = (artifact: ArtifactDescriptor): number => {
-  const match = /-seed-(\d+)$/u.exec(artifact.artifactId);
-  if (match?.[1] === undefined) {
+const MAX_UINT64_SEED = (1n << 64n) - 1n;
+
+const selectedSeed = (artifact: ArtifactDescriptor): string => {
+  if (artifact.seed === undefined) {
     throw new PipelineOperationError(
-      "invalid_request",
-      "The selected fake preview does not contain a traceable seed",
+      "workflow_incompatible",
+      "The selected video preview has no explicit generation seed",
     );
   }
-  const seed = Number(match[1]);
-  if (!Number.isSafeInteger(seed)) {
+  const seed = BigInt(artifact.seed);
+  if (seed > MAX_UINT64_SEED) {
     throw new PipelineOperationError(
-      "invalid_request",
+      "workflow_incompatible",
       "Preview seed is invalid",
     );
   }
-  return seed;
+  return seed.toString(10);
 };
 
 export class PipelineOrchestrator {
@@ -565,6 +567,33 @@ export class PipelineOrchestrator {
       }
     }
     return [...relations.values()];
+  }
+
+  isArtifactCurrent(pipelineId: string, artifactId: string): boolean {
+    this.#store.pipelines.getRequired(pipelineId);
+    const artifact = this.#store.artifacts.getRequired(artifactId);
+    if (artifact.pipelineId !== pipelineId) {
+      throw new PipelineOperationError(
+        "not_found",
+        "The requested Artifact was not found",
+      );
+    }
+    return !this.#store.artifacts.isSuperseded(artifactId);
+  }
+
+  async readArtifactContent(
+    pipelineId: string,
+    artifactId: string,
+  ): Promise<Buffer> {
+    this.#store.pipelines.getRequired(pipelineId);
+    const artifact = this.#store.artifacts.getRequired(artifactId);
+    if (artifact.pipelineId !== pipelineId) {
+      throw new PipelineOperationError(
+        "not_found",
+        "The requested Artifact was not found",
+      );
+    }
+    return await this.#readVerifiedArtifact(artifact);
   }
 
   async decideGate(
@@ -1134,7 +1163,10 @@ export class PipelineOrchestrator {
         const preview = this.#store.artifacts.getRequired(
           previewGate.selectedArtifactId,
         );
-        const seed = selectedSeed(preview) + payload.rerollOrdinal * 1_000_003;
+        const seed = (
+          BigInt(selectedSeed(preview)) +
+          BigInt(payload.rerollOrdinal) * 1_000_003n
+        ).toString(10);
         await this.#runFinalFlow(
           payload.pipelineId,
           frame,
@@ -1253,6 +1285,7 @@ export class PipelineOrchestrator {
         this.#store.stages.transition(
           stage.stageId,
           uncertain ? "failed" : "cancelled",
+          { activeRunId: null },
         );
       }
     }
@@ -1640,7 +1673,7 @@ export class PipelineOrchestrator {
     inputFrame: ArtifactDescriptor,
     selectedPreview: ArtifactDescriptor,
     rerollOrdinal: number,
-    seed: number,
+    seed: string,
   ): Promise<void> {
     if (
       this.#store.gates
@@ -1910,15 +1943,13 @@ export class PipelineOrchestrator {
       const preview = inputs.find(
         (artifact) => artifact.kind === "video_preview",
       );
-      const seedValue = (payload.command as FakeVideoCommand).seed;
-      const seed =
-        typeof seedValue === "bigint" ? Number(seedValue) : Number(seedValue);
-      if (
-        frame === undefined ||
-        preview === undefined ||
-        !Number.isSafeInteger(seed) ||
-        seed < 0
-      ) {
+      let seed: string | undefined;
+      try {
+        seed = extractSingleVideoSeed(payload.command as FakeVideoCommand);
+      } catch {
+        seed = undefined;
+      }
+      if (frame === undefined || preview === undefined || seed === undefined) {
         throw new PipelineOperationError(
           "missing_asset",
           "Recovered final video inputs or seed are incomplete",
@@ -2079,8 +2110,12 @@ export class PipelineOrchestrator {
       }
       if (payload.backend === "fake-video") {
         const videoCommand = command as FakeVideoCommand;
+        const expectedSeed = extractSingleVideoSeed(videoCommand);
         const expectedFrames = videoCommand.frames ?? videoCommand.frameCount;
         const expectedFps = videoCommand.fps ?? videoCommand.frameRate;
+        if (artifact.seed !== expectedSeed) {
+          fail(`artifact '${artifact.artifactId}' has an unexpected seed`);
+        }
         if (
           (expectedFrames !== undefined &&
             artifact.frameCount !== expectedFrames) ||
@@ -2157,6 +2192,14 @@ export class PipelineOrchestrator {
         ),
       );
     }
+    if (this.#submissionCanNoLongerPublish(payload.runId)) {
+      throw this.#recordBackendFailure(
+        message,
+        new Error(
+          "The persisted backend submission can no longer publish a result",
+        ),
+      );
+    }
 
     let result: BackendResult | undefined;
     if (message.result !== undefined) {
@@ -2206,9 +2249,27 @@ export class PipelineOrchestrator {
           result = reconciliation.result;
           reconciled = true;
         } else if (reconciliation.kind === "pending") {
-          run = this.#store.runs.transition(run.runId, "submitted", {
+          // Cancellation can finish while reconcile() is awaiting the
+          // provider. Preserve the returned reference before deciding whether
+          // this Run may still publish; never resurrect a terminal Run.
+          run = this.#store.runs.patch(run.runId, {
             backendRef: reconciliation.ref,
           });
+          if (this.#submissionCanNoLongerPublish(run.runId)) {
+            throw this.#recordBackendFailure(
+              message,
+              new FakeBackendOutcomeUnknownError(
+                {
+                  code: "backend_timeout",
+                  message:
+                    "Cancellation raced with backend reconciliation after a job reference was returned",
+                  retryDisposition: "reconcile_first",
+                },
+                reconciliation.ref,
+              ),
+            );
+          }
+          run = this.#store.runs.transition(run.runId, "submitted");
           try {
             result = await this.#waitForBackendResult(
               typedDriver,
@@ -2291,10 +2352,28 @@ export class PipelineOrchestrator {
         if (started.kind === "completed") {
           result = started.result;
         } else {
+          // provider.start may have been in flight while cancellation settled
+          // the Run as outcome_unknown. Persist the real provider reference,
+          // but do not transition terminal history back to submitted.
           run = this.#store.runs.getRequired(run.runId);
-          run = this.#store.runs.transition(run.runId, "submitted", {
+          run = this.#store.runs.patch(run.runId, {
             backendRef: started.ref,
           });
+          if (this.#submissionCanNoLongerPublish(run.runId)) {
+            throw this.#recordBackendFailure(
+              message,
+              new FakeBackendOutcomeUnknownError(
+                {
+                  code: "backend_timeout",
+                  message:
+                    "Cancellation raced with backend submission after a job reference was returned",
+                  retryDisposition: "reconcile_first",
+                },
+                started.ref,
+              ),
+            );
+          }
+          run = this.#store.runs.transition(run.runId, "submitted");
           try {
             result = await this.#waitForBackendResult(typedDriver, started.ref);
           } catch (cause) {
@@ -2505,6 +2584,13 @@ export class PipelineOrchestrator {
           ambiguous ? "outcome_unknown" : "failed",
           ambiguousRef === undefined ? {} : { backendRef: ambiguousRef },
         );
+      } else if (run.backendRef === undefined && ambiguousRef !== undefined) {
+        // A provider may return its durable reference after cancellation has
+        // already settled the Run as outcome_unknown. Same-state patching
+        // preserves that reference without adding a terminal-state exit.
+        run = this.#store.runs.patch(run.runId, {
+          backendRef: ambiguousRef,
+        });
       }
       const stage = this.#store.stages.getRequired(run.stageId);
       // Import is deliberately not one large filesystem/database transaction.
@@ -2513,7 +2599,11 @@ export class PipelineOrchestrator {
       // candidate that another Gate or Stage could consume.
       this.#store.artifacts.markStageOutputsSuperseded(stage.stageId);
       if (stage.status === "active") {
-        this.#store.stages.transition(stage.stageId, "failed");
+        this.#store.stages.transition(stage.stageId, "failed", {
+          activeRunId: null,
+        });
+      } else if (stage.activeRunId === run.runId) {
+        this.#store.stages.patch(stage.stageId, { activeRunId: null });
       }
       const pipeline = this.#store.pipelines.getRequired(run.pipelineId);
       if (!PIPELINE_TERMINAL_STATUSES.has(pipeline.status)) {
@@ -2542,13 +2632,10 @@ export class PipelineOrchestrator {
     if (cause instanceof FakeBackendInvocationError) {
       return new PipelineOperationError(
         cause.backendError.code,
-        cause.backendError.message,
-        {
-          cause,
-          ...(cause.backendError.details === undefined
-            ? {}
-            : { details: cause.backendError.details }),
-        },
+        ambiguous
+          ? "Backend outcome is unknown; automatic resubmission is disabled"
+          : "Backend execution failed",
+        { cause },
       );
     }
     return new PipelineOperationError(
@@ -3215,6 +3302,7 @@ export class PipelineOrchestrator {
       ...(source?.backendRequestId === undefined
         ? {}
         : { backendRequestId: source.backendRequestId }),
+      ...(source?.seed === undefined ? {} : { seed: source.seed }),
     };
     const stored = this.#store.artifacts.create(descriptor);
     await this.#afterLocalArtifactPersisted?.({
@@ -3629,6 +3717,18 @@ export class PipelineOrchestrator {
         "invalid_request",
         "Final acceptance does not use select",
       );
+    }
+    if (gate.kind === "video_selection" && input.action === "select") {
+      if (!gate.candidateArtifactIds.includes(input.selectedArtifactId)) {
+        throw new PipelineOperationError(
+          "invalid_request",
+          "The selected Artifact is not a candidate for this Gate",
+        );
+      }
+      const selected = this.#store.artifacts.getRequired(
+        input.selectedArtifactId,
+      );
+      selectedSeed(selected);
     }
   }
 

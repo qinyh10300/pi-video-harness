@@ -8,9 +8,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   FakeImageBackend,
   FakeVideoBackend,
+  type FakeBackendResultMetadata,
   type FakeImageCommand,
+  type FakeVideoCommand,
 } from "@pi-video-harness/backend-fake";
-import type { RunContext } from "@pi-video-harness/contracts";
+import type {
+  ArtifactDescriptor,
+  BackendJobRef,
+  RunContext,
+} from "@pi-video-harness/contracts";
 import { SqliteCoreStore } from "@pi-video-harness/core";
 import { LocalArtifactStore } from "@pi-video-harness/media";
 
@@ -106,6 +112,36 @@ const openGate = (
   const gate = snapshot.gates.find((candidate) => candidate.status === "open");
   expect(gate).toBeDefined();
   return gate!;
+};
+
+const transformVideoArtifacts = (
+  backend: FakeVideoBackend,
+  transform: (artifact: ArtifactDescriptor) => ArtifactDescriptor,
+): void => {
+  const originalWait = backend.waitUntilTerminal.bind(backend);
+  backend.waitUntilTerminal = async (ref) => {
+    const job = await originalWait(ref);
+    if (job.result === undefined) return job;
+    const idMap = new Map<string, string>();
+    const artifacts = job.result.artifacts.map((artifact) => {
+      const transformed = transform(artifact);
+      idMap.set(artifact.artifactId, transformed.artifactId);
+      return transformed;
+    });
+    const metadata = job.result.metadata as FakeBackendResultMetadata;
+    const payloads = metadata.payloads.map((payload) => ({
+      ...payload,
+      artifactId: idMap.get(payload.artifactId) ?? payload.artifactId,
+    }));
+    return {
+      ...job,
+      result: {
+        ...job.result,
+        artifacts,
+        metadata: { ...metadata, payloads },
+      },
+    };
+  };
 };
 
 describe("PipelineOrchestrator offline E2E", () => {
@@ -1397,6 +1433,274 @@ describe("PipelineOrchestrator offline E2E", () => {
     expect(harness.store.outbox.listUnfinished()).toHaveLength(0);
   });
 
+  it("persists a video job reference returned after cancellation and settles recovery", async () => {
+    let enterStart!: () => void;
+    let releaseStart!: () => void;
+    const startEntered = new Promise<void>((resolve) => {
+      enterStart = resolve;
+    });
+    const startBlocked = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    let startCalls = 0;
+    let returnedRef: BackendJobRef | undefined;
+    const video = new FakeVideoBackend({
+      faultInjector: async ({ operation }) => {
+        if (operation !== "start") return;
+        startCalls += 1;
+        if (startCalls === 1) {
+          enterStart();
+          await startBlocked;
+        }
+      },
+    });
+    const originalStart = video.start.bind(video);
+    video.start = async (command, context) => {
+      const result = await originalStart(command, context);
+      if (result.kind === "submitted") returnedRef = result.ref;
+      return result;
+    };
+    const harness = await makeHarness("fake-image2-video-v1", { video });
+    const plan = await harness.orchestrator.createPlan({
+      brief: "A glass marble begins rolling, then the request is cancelled.",
+    });
+    let snapshot = await harness.orchestrator.createPipeline({
+      planId: plan.planId,
+      expectedPlanHash: plan.planHash,
+      idempotencyKey: "cancel-video-start-pipeline",
+    });
+    let gate = openGate(snapshot);
+    snapshot = await harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "approve",
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "cancel-video-start-plan",
+      },
+    );
+    gate = openGate(snapshot);
+    const selectingImage = harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "select",
+        selectedArtifactId: gate.candidateArtifactIds[0]!,
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "cancel-video-start-image",
+      },
+    );
+    await startEntered;
+
+    try {
+      snapshot = await harness.orchestrator.cancelPipeline(
+        snapshot.pipeline.pipelineId,
+        {
+          idempotencyKey: "cancel-video-start-request",
+          reason: "cancel while video provider.start is in flight",
+        },
+      );
+      expect(snapshot.pipeline.status).toBe("needs_attention");
+    } finally {
+      releaseStart();
+    }
+
+    await expect(selectingImage).rejects.toMatchObject({
+      code: "backend_timeout",
+    });
+    snapshot = harness.orchestrator.getPipeline(snapshot.pipeline.pipelineId);
+    const videoStage = snapshot.stages.find(
+      (stage) => stage.kind === "video_preview",
+    );
+    expect(videoStage).toMatchObject({
+      status: "failed",
+      currentOutputArtifactIds: [],
+    });
+    expect(videoStage?.activeRunId).toBeUndefined();
+    const videoRun = snapshot.runs.find(
+      (run) => run.stageId === videoStage?.stageId,
+    );
+    expect(returnedRef).toBeDefined();
+    expect(videoRun).toMatchObject({
+      status: "outcome_unknown",
+      backendRef: returnedRef,
+    });
+    expect(
+      snapshot.gates.some((candidate) => candidate.status === "open"),
+    ).toBe(false);
+    expect(
+      snapshot.artifacts.some(
+        (artifact) =>
+          artifact.kind === "video_preview" &&
+          harness.store.artifacts.isSuperseded(artifact.artifactId) === false,
+      ),
+    ).toBe(false);
+    const submissionKey = harness.store.runs.metadata(
+      videoRun!.runId,
+    ).submissionKey;
+    expect(
+      harness.store.outbox.getByDeduplicationKey(submissionKey),
+    ).toMatchObject({ status: "dead", lastError: "outcome_unknown" });
+    expect(harness.store.outbox.listUnfinished()).toHaveLength(0);
+    expect(await harness.orchestrator.recover()).toEqual({
+      processed: 0,
+      pending: 0,
+    });
+    expect(startCalls).toBe(1);
+  });
+
+  it("persists a pending reconciliation reference returned after cancellation", async () => {
+    let enterIntent!: () => void;
+    let releaseIntent!: () => void;
+    const intentEntered = new Promise<void>((resolve) => {
+      enterIntent = resolve;
+    });
+    const intentBlocked = new Promise<void>((resolve) => {
+      releaseIntent = resolve;
+    });
+    let blockNextIntent = false;
+    const video = new FakeVideoBackend();
+    const harness = await makeHarness("fake-image2-video-v1", {
+      video,
+      afterSubmissionIntentPersisted: async () => {
+        if (!blockNextIntent) return;
+        blockNextIntent = false;
+        enterIntent();
+        await intentBlocked;
+      },
+    });
+    const plan = await harness.orchestrator.createPlan({
+      brief: "A reconciliation returns its job reference during cancellation.",
+    });
+    let snapshot = await harness.orchestrator.createPipeline({
+      planId: plan.planId,
+      expectedPlanHash: plan.planHash,
+      idempotencyKey: "reconcile-cancel-pipeline",
+    });
+    let gate = openGate(snapshot);
+    snapshot = await harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "approve",
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "reconcile-cancel-plan",
+      },
+    );
+    gate = openGate(snapshot);
+    blockNextIntent = true;
+    const selectingImage = harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "select",
+        selectedArtifactId: gate.candidateArtifactIds[0]!,
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "reconcile-cancel-image",
+      },
+    );
+    await intentEntered;
+
+    const inFlight = harness.orchestrator.getPipeline(
+      snapshot.pipeline.pipelineId,
+    );
+    const videoStage = inFlight.stages.find(
+      (stage) => stage.kind === "video_preview",
+    )!;
+    const videoRun = inFlight.runs.find(
+      (run) => run.stageId === videoStage.stageId,
+    )!;
+    const submissionKey = harness.store.runs.metadata(
+      videoRun.runId,
+    ).submissionKey;
+    const submission = harness.store.outbox.getByDeduplicationKey<{
+      command: FakeVideoCommand;
+      context: RunContext;
+    }>(submissionKey)!;
+    const started = await video.start(
+      submission.payload.command,
+      submission.payload.context,
+    );
+    expect(started.kind).toBe("submitted");
+    const returnedRef = started.kind === "submitted" ? started.ref : undefined;
+
+    let enterReconcile!: () => void;
+    let releaseReconcile!: () => void;
+    const reconcileEntered = new Promise<void>((resolve) => {
+      enterReconcile = resolve;
+    });
+    const reconcileBlocked = new Promise<void>((resolve) => {
+      releaseReconcile = resolve;
+    });
+    video.reconcile = async () => {
+      enterReconcile();
+      await reconcileBlocked;
+      return { kind: "pending", ref: returnedRef! };
+    };
+
+    const imageGateContinuation = harness.store.outbox.getByDeduplicationKey(
+      `gate-continuation:${gate.gateId}`,
+    )!;
+    expect(imageGateContinuation.status).toBe("claimed");
+    harness.store.outbox.complete(
+      imageGateContinuation.outboxId,
+      imageGateContinuation.leaseOwner!,
+      { testSettlement: true },
+    );
+    const firstClaim = harness.store.outbox.claimById(submission.outboxId, {
+      workerId: "simulated-crashed-worker",
+    });
+    expect(firstClaim?.attemptCount).toBe(1);
+    harness.store.outbox.requeueClaimedForRecovery();
+
+    const restarted = new PipelineOrchestrator({
+      store: harness.store,
+      profiles: harness.profiles,
+      artifactStore: harness.artifactStore,
+      fakeImageBackend: new FakeImageBackend(),
+      fakeVideoBackend: video,
+      workerId: "reconcile-race-worker",
+    });
+    const recovering = restarted.recover();
+    await reconcileEntered;
+    try {
+      snapshot = await restarted.cancelPipeline(snapshot.pipeline.pipelineId, {
+        idempotencyKey: "reconcile-cancel-request",
+        reason: "cancel while reconcile is in flight",
+      });
+      expect(snapshot.pipeline.status).toBe("needs_attention");
+    } finally {
+      releaseReconcile();
+    }
+
+    expect(await recovering).toEqual({ processed: 1, pending: 0 });
+    releaseIntent();
+    await expect(selectingImage).rejects.toMatchObject({
+      code: "backend_unavailable",
+    });
+    snapshot = restarted.getPipeline(snapshot.pipeline.pipelineId);
+    const settledStage = snapshot.stages.find(
+      (stage) => stage.stageId === videoStage.stageId,
+    );
+    const settledRun = snapshot.runs.find(
+      (run) => run.runId === videoRun.runId,
+    );
+    expect(settledStage).toMatchObject({
+      status: "failed",
+      currentOutputArtifactIds: [],
+    });
+    expect(settledStage?.activeRunId).toBeUndefined();
+    expect(settledRun).toMatchObject({
+      status: "outcome_unknown",
+      backendRef: returnedRef,
+    });
+    expect(
+      harness.store.outbox.getByDeduplicationKey(submissionKey),
+    ).toMatchObject({ status: "dead", lastError: "outcome_unknown" });
+    expect(harness.store.outbox.listUnfinished()).toHaveLength(0);
+    expect(await restarted.recover()).toEqual({ processed: 0, pending: 0 });
+  });
+
   it("settles the outer workflow when a backend outcome needs attention", async () => {
     const image = new FakeImageBackend({ unknownOutcome: true });
     const harness = await makeHarness("fake-image2-video-v1", { image });
@@ -1438,6 +1742,53 @@ describe("PipelineOrchestrator offline E2E", () => {
     expect(
       restarted.getPipeline(snapshot.pipeline.pipelineId).pipeline.status,
     ).toBe("needs_attention");
+  });
+
+  it("keeps backend diagnostic text out of public pipeline errors", async () => {
+    const privateDiagnostic =
+      "Provider response for customer@example.com contained private internals";
+    const image = new FakeImageBackend({
+      terminalError: {
+        code: "backend_unavailable",
+        message: privateDiagnostic,
+        retryDisposition: "limited",
+        details: { responseBody: "private provider response" },
+      },
+    });
+    const harness = await makeHarness("fake-image2-video-v1", { image });
+    const plan = await harness.orchestrator.createPlan({
+      brief: "A sealed envelope rests on a desk.",
+    });
+    let snapshot = await harness.orchestrator.createPipeline({
+      planId: plan.planId,
+      expectedPlanHash: plan.planHash,
+      idempotencyKey: "private-backend-error-pipeline",
+    });
+    const gate = openGate(snapshot);
+
+    let publicError: unknown;
+    try {
+      await harness.orchestrator.decideGate(
+        snapshot.pipeline.pipelineId,
+        gate.gateId,
+        {
+          action: "approve",
+          expectedPipelineVersion: gate.expectedPipelineVersion,
+          idempotencyKey: "private-backend-error-decision",
+        },
+      );
+    } catch (error) {
+      publicError = error;
+    }
+    expect(publicError).toMatchObject({
+      code: "backend_unavailable",
+      message: "Backend execution failed",
+    });
+    expect(String(publicError)).not.toContain(privateDiagnostic);
+
+    snapshot = harness.orchestrator.getPipeline(snapshot.pipeline.pipelineId);
+    expect(snapshot.pipeline.status).toBe("failed");
+    expect(harness.store.outbox.listUnfinished()).toHaveLength(0);
   });
 
   it("coalesces concurrent replay of the same Gate decision", async () => {
@@ -1674,6 +2025,136 @@ describe("PipelineOrchestrator offline E2E", () => {
     expect(snapshot.artifacts).toHaveLength(0);
     expect(store.outbox.listUnfinished()).toHaveLength(0);
     expect(await orchestrator.recover()).toEqual({ processed: 0, pending: 0 });
+  });
+
+  it.each(["missing", "mismatched"] as const)(
+    "fails closed when a video result has a %s explicit seed",
+    async (seedFault) => {
+      const video = new FakeVideoBackend();
+      transformVideoArtifacts(video, (artifact) => {
+        if (seedFault === "missing") {
+          const { seed: _seed, ...withoutSeed } = artifact;
+          return withoutSeed;
+        }
+        return {
+          ...artifact,
+          seed: String(BigInt(artifact.seed!) + 1n),
+        };
+      });
+      const harness = await makeHarness("fake-image2-video-v1", { video });
+      const plan = await harness.orchestrator.createPlan({
+        brief: `A seed-${seedFault} video result must fail before selection.`,
+      });
+      let snapshot = await harness.orchestrator.createPipeline({
+        planId: plan.planId,
+        expectedPlanHash: plan.planHash,
+        idempotencyKey: `seed-${seedFault}-pipeline`,
+      });
+      let gate = openGate(snapshot);
+      snapshot = await harness.orchestrator.decideGate(
+        snapshot.pipeline.pipelineId,
+        gate.gateId,
+        {
+          action: "approve",
+          expectedPipelineVersion: gate.expectedPipelineVersion,
+          idempotencyKey: `seed-${seedFault}-plan`,
+        },
+      );
+      gate = openGate(snapshot);
+
+      await expect(
+        harness.orchestrator.decideGate(
+          snapshot.pipeline.pipelineId,
+          gate.gateId,
+          {
+            action: "select",
+            selectedArtifactId: gate.candidateArtifactIds[0]!,
+            expectedPipelineVersion: gate.expectedPipelineVersion,
+            idempotencyKey: `seed-${seedFault}-image`,
+          },
+        ),
+      ).rejects.toMatchObject({ code: "video_quality_gate_failed" });
+
+      snapshot = harness.orchestrator.getPipeline(snapshot.pipeline.pipelineId);
+      expect(snapshot.pipeline.status).toBe("failed");
+      expect(
+        snapshot.gates.some(
+          (candidate) =>
+            candidate.kind === "video_selection" && candidate.status === "open",
+        ),
+      ).toBe(false);
+      expect(harness.store.outbox.listUnfinished()).toHaveLength(0);
+      expect(await harness.orchestrator.recover()).toEqual({
+        processed: 0,
+        pending: 0,
+      });
+    },
+  );
+
+  it("uses the explicit seed when video Artifact IDs are opaque", async () => {
+    const video = new FakeVideoBackend();
+    let opaqueOrdinal = 0;
+    transformVideoArtifacts(video, (artifact) => ({
+      ...artifact,
+      artifactId: `opaque-video-artifact-${++opaqueOrdinal}`,
+    }));
+    const harness = await makeHarness("fake-image2-video-v1", { video });
+    const plan = await harness.orchestrator.createPlan({
+      brief: "An opaque preview identifier retains explicit seed lineage.",
+    });
+    let snapshot = await harness.orchestrator.createPipeline({
+      planId: plan.planId,
+      expectedPlanHash: plan.planHash,
+      idempotencyKey: "opaque-seed-pipeline",
+    });
+    let gate = openGate(snapshot);
+    snapshot = await harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "approve",
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "opaque-seed-plan",
+      },
+    );
+    gate = openGate(snapshot);
+    snapshot = await harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "select",
+        selectedArtifactId: gate.candidateArtifactIds[0]!,
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "opaque-seed-image",
+      },
+    );
+    gate = openGate(snapshot);
+    expect(gate.kind).toBe("video_selection");
+    const selectedPreview = snapshot.artifacts.find(
+      (artifact) => artifact.artifactId === gate.candidateArtifactIds[0],
+    );
+    expect(selectedPreview).toMatchObject({
+      artifactId: expect.stringMatching(/^opaque-video-artifact-/u),
+      seed: expect.stringMatching(/^\d+$/u),
+    });
+    expect(selectedPreview?.artifactId).not.toContain("-seed-");
+
+    snapshot = await harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "select",
+        selectedArtifactId: selectedPreview!.artifactId,
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "opaque-seed-video",
+      },
+    );
+    expect(openGate(snapshot).kind).toBe("final_acceptance");
+    expect(
+      snapshot.artifacts.find((artifact) => artifact.kind === "video_final")
+        ?.seed,
+    ).toBe(selectedPreview?.seed);
+    expect(harness.store.outbox.listUnfinished()).toHaveLength(0);
   });
 
   it("fails closed before importing backend artifacts of the wrong kind", async () => {

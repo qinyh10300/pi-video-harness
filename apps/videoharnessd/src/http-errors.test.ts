@@ -7,6 +7,7 @@ import {
   RecordConflictError,
   RecordNotFoundError,
 } from "@pi-video-harness/core";
+import { PipelineOperationError } from "@pi-video-harness/pipeline";
 
 import { serializeHttpError } from "./http-errors.js";
 
@@ -40,4 +41,37 @@ describe("serializeHttpError core mappings", () => {
       expect(serialized.response.error.retryDisposition).toBe("never");
     },
   );
+
+  it("trusts only concrete PipelineOperationError domain errors", () => {
+    const trusted = serializeHttpError(
+      new PipelineOperationError(
+        "artifact_superseded",
+        "The Artifact is no longer current",
+      ),
+      "request-3",
+    );
+    expect(trusted).toMatchObject({
+      statusCode: 409,
+      response: {
+        error: {
+          code: "artifact_superseded",
+          message: "The Artifact is no longer current",
+        },
+      },
+    });
+
+    const untrusted = serializeHttpError(
+      {
+        code: "not_found",
+        message: "OPENAI_API_KEY=sk-private /Users/person/private.txt",
+      },
+      "request-4",
+    );
+    expect(untrusted.statusCode).toBe(500);
+    expect(untrusted.response.error).toMatchObject({
+      code: "backend_unavailable",
+      message: "The service could not complete the request",
+    });
+    expect(JSON.stringify(untrusted)).not.toContain("private");
+  });
 });

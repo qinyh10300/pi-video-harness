@@ -1,7 +1,7 @@
 # GPT-Image-2 → Wan2.2-I2V-A14B 开发规格
 
 - 文档状态：已确认；Phase A 离线实现已完成，Phase B–D 真实部分待实现
-- 最后更新：2026-08-26
+- 最后更新：2026-08-27
 - 关联决策：[ADR-0001](../adr/0001-gpt-image-2-wan22-i2v-a14b-pipeline.md)
 - Pipeline Profile：`gpt-image2-wan22-i2v-a14b-v1`
 - 目标读者：实现 VideoHarness 服务、Pi Extension、模型适配器和测试的开发者
@@ -435,20 +435,21 @@ manifest 声明的字段：输入图片、正负 Prompt、seed、面积档、len
 
 ### 10.1 HTTP API
 
-| 方法与路径                                               | 用途                                                                   |
-| -------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `GET /v1/health`                                         | 服务、数据库、OpenAI 配置和 ComfyUI 健康检查                           |
-| `GET /v1/capabilities`                                   | 返回图片/视频模型、规格、Worker 与限制                                 |
-| `POST /v1/assets`                                        | 上传并校验参考图或输入素材（Phase A 未实现）                           |
-| `POST /v1/plans`                                         | 创建并持久化不产生费用的 Plan                                          |
-| `GET /v1/plans/:planId`                                  | 读取 Plan、版本和估算                                                  |
-| `POST /v1/pipelines`                                     | 按指定 Plan 创建 draft Pipeline 并打开 `plan_approval`；不调用外部生成 |
-| `GET /v1/pipelines/:pipelineId`                          | 获取 Pipeline、活动 Stage 与 Gate                                      |
-| `GET /v1/pipelines/:pipelineId/events`                   | Phase A 已实现有界长轮询；SSE 待办                                     |
-| `POST /v1/pipelines/:pipelineId/gates/:gateId/decisions` | 选择、批准、拒绝或请求修改                                             |
-| `POST /v1/pipelines/:pipelineId/cancel`                  | 取消 Pipeline 与可取消的活动 Stage                                     |
-| `POST /v1/pipelines/:pipelineId/rerolls`                 | 创建显式的新候选运行                                                   |
-| `GET /v1/pipelines/:pipelineId/artifacts`                | 获取所有产物与 lineage                                                 |
+| 方法与路径                                                    | 用途                                                                   |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `GET /v1/health`                                              | 服务、数据库、OpenAI 配置和 ComfyUI 健康检查                           |
+| `GET /v1/capabilities`                                        | 返回阶段、执行模式、Profile、后端健康、安全开关与限制                  |
+| `POST /v1/assets`                                             | 上传并校验参考图或输入素材（Phase A 未实现）                           |
+| `POST /v1/plans`                                              | 创建并持久化不产生费用的 Plan                                          |
+| `GET /v1/plans/:planId`                                       | 读取 Plan、版本和估算                                                  |
+| `POST /v1/pipelines`                                          | 按指定 Plan 创建 draft Pipeline 并打开 `plan_approval`；不调用外部生成 |
+| `GET /v1/pipelines/:pipelineId`                               | 获取 Pipeline、活动 Stage 与 Gate                                      |
+| `GET /v1/pipelines/:pipelineId/events`                        | 按 sequence 游标读取事件，支持有界长轮询；SSE 待办                     |
+| `POST /v1/pipelines/:pipelineId/gates/:gateId/decisions`      | 选择、批准、拒绝或请求修改                                             |
+| `POST /v1/pipelines/:pipelineId/cancel`                       | 取消 Pipeline 与可取消的活动 Stage                                     |
+| `POST /v1/pipelines/:pipelineId/rerolls`                      | 创建显式的新候选运行                                                   |
+| `GET /v1/pipelines/:pipelineId/artifacts`                     | 获取当前/历史产物、结果状态与 lineage                                  |
+| `GET /v1/pipelines/:pipelineId/artifacts/:artifactId/content` | 校验完整性后读取内容，支持 SHA-256 ETag 条件请求                       |
 
 计划中的 `POST /v1/jobs` 作为叶子 Stage 的内部执行接口，目前未实现。表中除
 `/v1/assets` 外的 Pipeline API 已在 Phase A 可用，其执行后端仅为 Fake；
@@ -468,6 +469,19 @@ interface GateDecisionInput {
 
 版本不匹配返回 `409 pipeline_version_conflict`，不能让旧任务卡片覆盖新选择。
 
+事件 route 的 `afterSequence` 表示只返回 sequence 严格更大的事件；`limit`
+为 1–200、默认 100，`waitMs` 为 0–30000、默认 0（立即读取）。HTTP Client 的
+`getEvents` 沿用立即读取默认值；Pi `video_job.wait` 省略 `waitMs` 时默认 25000
+ms。客户端应把响应 `nextAfterSequence` 作为下一次工具调用的 `after`（即 route 的
+`afterSequence`），即使超时且 `events`
+为空也无需自行猜测游标。有等待窗口时，HTTP Client 的 transport
+timeout 至少增加 5 秒余量，避免最大等待值与客户端超时同时触发。停止长轮询不等于取消 Pipeline。
+
+`reject` 是显式 Gate 决定：Phase A 会把 Pipeline 停在
+`needs_attention`，保留产物和审计历史，不会隐式删除、重做或取消。`request_changes`
+当前也停在同一状态；两者的意图分别记录，但 revision/resume
+API 仍待实现。若要终止执行，调用方必须显式使用 `cancel`。
+
 ### 10.2 Pi 工具映射
 
 Phase A 已实现下列 HTTP Client 映射和工具定义，但尚未使用正式 Pi
@@ -476,8 +490,8 @@ SDK 完成注册、审批卡片或 Package 发布。
 - `video_generate({ dryRun: true, ... })`：创建 Plan 并显示 Prompt、模型、候选数量和估算；
 - `video_generate({ planId, expectedPlanHash, ... })`：创建 draft
   Pipeline 和计划 Gate，不执行付费调用；
-- `video_job({ action: "status" | "wait" | "cancel" | "result" })`：提供计划中的查询、等待、取消和结果行为；
-- `video_job({ action: "select" | "approve" | "request_changes" | "reroll" })`：处理 Gate；只有计划 Gate 批准后，Pipeline 才进入图片生成；
+- `video_job({ action: "status" | "wait" | "cancel" | "result" })`：提供查询、游标等待、取消和结果行为；
+- `video_job({ action: "select" | "approve" | "reject" | "request_changes" | "reroll" })`：处理 Gate；只有计划 Gate 批准后，Pipeline 才进入图片生成；
 - `video_capabilities`：返回 GPT-Image-2、A14B、支持画幅、默认规格、Worker 状态和费用保护状态。
 
 ## 11. 状态机
@@ -683,6 +697,7 @@ interface ArtifactDescriptor {
   modelId?: string;
   modelRevision?: string;
   backendRequestId?: string;
+  seed?: string;
   promptIds: string[];
   qaReportArtifactId?: string;
 }
@@ -699,6 +714,45 @@ interface ArtifactRelation {
     | "derived_from";
 }
 ```
+
+视频生成 seed 使用最长 20 位的规范化非负十进制字符串（`0`
+或不带前导零的正整数）持久化，属于显式 lineage；Gate
+continuation 会先校验该字段，防止被污染的候选继续执行。晋级成片时不得从 Artifact
+ID 或文件名反向猜测 seed。
+
+`ArtifactDescriptor` 是持久化领域契约；HTTP
+`result`/Artifact 集合在它之上增加读取期状态，不把易变的当前性回写进历史 descriptor：
+
+```ts
+interface ArtifactResultView extends ArtifactDescriptor {
+  current: boolean;
+  accepted: boolean;
+  contentPath: string;
+}
+
+interface ArtifactCollectionView {
+  pipelineStatus: PipelineStatus;
+  pipelineVersion: number;
+  artifacts: ArtifactResultView[];
+  relations: ArtifactRelation[];
+  currentArtifactIds: string[];
+  supersededArtifactIds: string[];
+  acceptedArtifactIds: string[];
+  resultReady: boolean;
+}
+```
+
+`current` 仅表示该 Artifact 尚未被标记为
+`superseded`；集合仍返回历史项以支持审计和 lineage。`accepted`
+只适用于 Pipeline 已为 `completed` 时当前且通过 `final_acceptance` 的
+`video_final`，poster、thumbnail 等派生产物不自动继承验收状态。`resultReady`
+当且仅当 `acceptedArtifactIds` 非空。`contentPath` 形如
+`/v1/pipelines/{pipelineId}/artifacts/{artifactId}/content`，是经过编码、继续受 Bearer 鉴权和完整性校验的 API 相对路径，绝不是主机绝对路径。`storagePath`
+仍只是服务端受控 Artifact
+Store 的内部相对定位符，调用方不得把它当下载地址。内容响应使用 Artifact
+SHA-256 作为强 ETag，并支持 `If-None-Match`；HTTP Client 的 `downloadArtifact`
+返回字节、MIME、实际大小、可用的 ETag/request
+ID，不通过本地文件路径旁路服务端校验。
 
 ### 13.3 Manifest 必填内容
 
@@ -778,29 +832,51 @@ Set 上校准后才能成为硬门禁。
 
 ## 16. 配置
 
-环境变量只承载秘密和部署差异；应与 README 使用同一组名称：
+环境变量只承载秘密和部署差异；应与 README 和 `.env.example`
+使用同一组名称。当前 Phase
+A 的可复制配置保持 Fake 为默认，真实 Provider 字段为空：
 
 ```dotenv
 VIDEOHARNESS_HOST=127.0.0.1
 VIDEOHARNESS_PORT=8787
 VIDEOHARNESS_DATA_DIR=./data
-VIDEOHARNESS_AUTH_TOKEN=replace-with-a-secret
+VIDEOHARNESS_AUTH_TOKEN=
 
-OPENAI_API_KEY=replace-with-a-secret
+OPENAI_API_KEY=
 VIDEOHARNESS_ENABLE_CLOUD_IMAGE=false
 VIDEOHARNESS_OPENAI_TIMEOUT_MS=180000
 VIDEOHARNESS_OPENAI_MAX_AUTO_RETRIES=1
 
-COMFYUI_BASE_URL=http://127.0.0.1:8188
-COMFYUI_WS_URL=ws://127.0.0.1:8188/ws
+COMFYUI_BASE_URL=
+COMFYUI_WS_URL=
 
-VIDEOHARNESS_PIPELINE_PROFILES=gpt-image2-wan22-i2v-a14b-v1
+VIDEOHARNESS_PIPELINE_PROFILES=fake-image2-video-v1,gpt-image2-wan22-i2v-a14b-v1
+VIDEOHARNESS_DEFAULT_PIPELINE_PROFILE=fake-image2-video-v1
 VIDEOHARNESS_PROMPT_LOG_MODE=hash
 VIDEOHARNESS_ARTIFACT_RETENTION_DAYS=30
 VIDEOHARNESS_MAX_CONCURRENT_GENERATIONS=1
-VIDEOHARNESS_MIN_FREE_DISK_GIB=100
+VIDEOHARNESS_MIN_FREE_DISK_GIB=10
 VIDEOHARNESS_MEMORY_RESERVE_GIB=20
 ```
+
+根目录 `pnpm dev` 和构建后的 `pnpm start` 使用 Node.js 24+
+`--env-file-if-exists=.env` 自动加载存在的
+`.env`；文件不存在时使用代码内安全默认值，且只加载 Fake Profile。复制
+`.env.example`
+后会额外展示保留的真实 Profile，但默认仍为 Fake，真实 Profile 仍是
+`productionReady: false`，OpenAI/ComfyUI Driver 仍禁用。填写 Key、URL 或打开
+`VIDEOHARNESS_ENABLE_CLOUD_IMAGE`
+不会把占位 Driver 变成真实 API 实现。启动摘要只打印监听地址、API/Phase/执行模式、默认 Profile 和鉴权状态，不打印 Token。
+
+Phase A 实际使用监听地址、端口、数据目录、Bearer
+Token、Profile 列表和默认 Profile；OpenAI/ComfyUI 字段只参与配置校验或禁用后端健康信息。OpenAI
+timeout/retry、Prompt 日志模式、Artifact
+retention、并发、最低磁盘和内存保留值会被解析和校验，但对应 Provider 重试、日志策略、清理任务、通用调度和资源预检尚未执行。它们是 Phase
+B–D 的保留契约，不是已经生效的运行保护。
+
+空 Token 只允许 loopback 本机开发；配置加载器会拒绝未设置 Token 的非 loopback 监听。非 loopback 部署还必须使用强
+`VIDEOHARNESS_AUTH_TOKEN`、受保护网络和 TLS reverse
+proxy 终止 HTTPS；服务本身当前不提供 TLS。真实 Token/Key 不得写入 Git、日志、事件、manifest 或 fixture。
 
 模型和生成参数进入版本控制的
 `config/pipelines/gpt-image2-wan22-i2v-a14b.v1.json`，并以内容哈希参与
@@ -874,10 +950,13 @@ C 冻结 checkpoint、精度配置、Workflow 和哈希前只属于保留 ID，�
 smoke
 test 后才可冻结；测试前它们是候选基线，不是已验证性能承诺。每个 Plan 必须保存实际
 `pipelineProfileId` 与
-`pipelineProfileHash`。真实密钥不得写入 Git、日志、事件、manifest 或测试 fixture。生产加载器必须拒绝浮动图片模型别名、未知 checkpoint 或 Profile/Workflow 哈希不匹配。
+`pipelineProfileHash`。生产加载器必须拒绝浮动图片模型别名、未知 checkpoint 或 Profile/Workflow 哈希不匹配。
 
 ## 17. 安全与隐私
 
+- Phase A 默认只监听 `127.0.0.1`；非 loopback 必须启用强 Bearer
+  Token，并通过受保护网络中的 TLS reverse
+  proxy 暴露，Artifact 内容 route 也不得绕过同一鉴权。
 - OpenAI API Key 只存在于服务端秘密管理或环境变量中。
 - Pi Extension 不直接持有供应商密钥。
 - 用户图片与 reference 只从受控 Asset Store 读取，不接受任意远程 URL。
@@ -990,7 +1069,10 @@ output。
 - 建立 TypeScript workspace 与 schemas；
 - 实现 Pipeline、Stage、Gate、Artifact 与 Outbox；
 - 实现 Fake Image/Video Backend；
-- 完成状态机、幂等、恢复和 crash injection 基础测试。
+- 完成状态机、幂等、恢复和 crash injection 基础测试；
+- 明确 capabilities 的离线阶段/执行模式/后端状态，提供 Artifact 当前性、最终验收状态和受控内容读取；
+- 补全事件游标/分页与 Pi 默认长轮询、`reject` 工具动作、自动 `.env` 加载和根目录
+  `pnpm check` 验证入口。
 
 验收：已通过。不访问外部 API 或 GPU，即可完成完整选择型 Pipeline，并在进程崩溃边界后恢复。Fake
 video 是测试 JSON，不是 MP4。

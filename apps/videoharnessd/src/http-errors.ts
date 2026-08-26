@@ -1,13 +1,18 @@
 import {
   ContractValidationError,
   ERROR_RETRY_DISPOSITION,
-  VIDEO_HARNESS_ERROR_CODES,
   type ErrorResponse,
   type VideoHarnessError,
   type VideoHarnessErrorCode,
 } from "@pi-video-harness/contracts";
-
-const ERROR_CODES = new Set<string>(VIDEO_HARNESS_ERROR_CODES);
+import {
+  IdempotencyConflictError,
+  InvalidStateTransitionError,
+  PipelineVersionConflictError,
+  RecordConflictError,
+  RecordNotFoundError,
+} from "@pi-video-harness/core";
+import { PipelineOperationError } from "@pi-video-harness/pipeline";
 
 const STATUS_BY_CODE: Readonly<Record<VideoHarnessErrorCode, number>> = {
   invalid_request: 400,
@@ -105,67 +110,48 @@ export class VideoHarnessHttpError extends Error {
   }
 }
 
-interface DomainErrorLike {
-  readonly code: VideoHarnessErrorCode;
-  readonly message: string;
-  readonly details?: Readonly<Record<string, unknown>>;
-  readonly retryAfterMs?: number;
-}
-
-interface CoreErrorLike {
-  readonly code: string;
-}
-
-const isCoreErrorLike = (error: unknown): error is CoreErrorLike =>
-  typeof error === "object" &&
-  error !== null &&
-  typeof (error as Record<string, unknown>).code === "string";
-
 /**
  * Core persistence/state-machine errors deliberately use internal codes. Map
  * the public cases explicitly so they cannot accidentally fall through to the
  * generic 500 response as the core adds more error types.
  */
 const coreHttpError = (error: unknown): VideoHarnessHttpError | undefined => {
-  if (!isCoreErrorLike(error)) return undefined;
-  switch (error.code) {
-    case "record_not_found":
-      return new VideoHarnessHttpError(
-        "not_found",
-        "The requested resource was not found",
-        { statusCode: 404, cause: error },
-      );
-    case "record_conflict":
-      return new VideoHarnessHttpError(
-        "invalid_request",
-        "The request conflicts with an existing resource",
-        { statusCode: 409, cause: error },
-      );
-    case "invalid_state_transition":
-      return new VideoHarnessHttpError(
-        "invalid_request",
-        "The operation conflicts with the resource's current state",
-        { statusCode: 409, cause: error },
-      );
-    case "idempotency_conflict":
-      return new VideoHarnessHttpError(
-        "invalid_request",
-        "The idempotency key was already used for a different request",
-        { statusCode: 409, cause: error },
-      );
-    default:
-      return undefined;
+  if (error instanceof RecordNotFoundError) {
+    return new VideoHarnessHttpError(
+      "not_found",
+      "The requested resource was not found",
+      { statusCode: 404, cause: error },
+    );
   }
-};
-
-const isDomainErrorLike = (error: unknown): error is DomainErrorLike => {
-  if (typeof error !== "object" || error === null) return false;
-  const candidate = error as Record<string, unknown>;
-  return (
-    typeof candidate.code === "string" &&
-    ERROR_CODES.has(candidate.code) &&
-    typeof candidate.message === "string"
-  );
+  if (error instanceof RecordConflictError) {
+    return new VideoHarnessHttpError(
+      "invalid_request",
+      "The request conflicts with an existing resource",
+      { statusCode: 409, cause: error },
+    );
+  }
+  if (error instanceof InvalidStateTransitionError) {
+    return new VideoHarnessHttpError(
+      "invalid_request",
+      "The operation conflicts with the resource's current state",
+      { statusCode: 409, cause: error },
+    );
+  }
+  if (error instanceof IdempotencyConflictError) {
+    return new VideoHarnessHttpError(
+      "invalid_request",
+      "The idempotency key was already used for a different request",
+      { statusCode: 409, cause: error },
+    );
+  }
+  if (error instanceof PipelineVersionConflictError) {
+    return new VideoHarnessHttpError(
+      "pipeline_version_conflict",
+      "The pipeline changed; reload before deciding",
+      { statusCode: 409, cause: error },
+    );
+  }
+  return undefined;
 };
 
 export interface SerializedHttpError {
@@ -193,17 +179,14 @@ export const serializeHttpError = (
       ? contractValidationError(error)
       : error instanceof VideoHarnessHttpError
         ? error
-        : mappedCoreError !== undefined
-          ? mappedCoreError
-          : isDomainErrorLike(error)
-            ? new VideoHarnessHttpError(error.code, error.message, {
-                ...(error.details === undefined
-                  ? {}
-                  : { details: error.details }),
-                ...(error.retryAfterMs === undefined
-                  ? {}
-                  : { retryAfterMs: error.retryAfterMs }),
-              })
+        : error instanceof PipelineOperationError
+          ? new VideoHarnessHttpError(error.code, error.message, {
+              ...(error.details === undefined
+                ? {}
+                : { details: error.details }),
+            })
+          : mappedCoreError !== undefined
+            ? mappedCoreError
             : new VideoHarnessHttpError(
                 "backend_unavailable",
                 "The service could not complete the request",

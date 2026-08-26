@@ -40,6 +40,14 @@ const GateParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const ArtifactParamsSchema = Type.Object(
+  {
+    pipelineId: HttpIdentifierSchema,
+    artifactId: HttpIdentifierSchema,
+  },
+  { additionalProperties: false },
+);
+
 const EmptyQuerySchema = Type.Object({}, { additionalProperties: false });
 
 const CanonicalUnsignedIntegerSchema = Type.String({
@@ -68,6 +76,10 @@ export interface GateParams extends PipelineParams {
   readonly gateId: string;
 }
 
+export interface ArtifactParams extends PipelineParams {
+  readonly artifactId: string;
+}
+
 const integerWithin = (
   value: string | undefined,
   fallback: number,
@@ -91,6 +103,9 @@ export const parsePipelineParams = (value: unknown): PipelineParams =>
 
 export const parseGateParams = (value: unknown): GateParams =>
   parseContract(GateParamsSchema, value, "gate path parameters");
+
+export const parseArtifactParams = (value: unknown): ArtifactParams =>
+  parseContract(ArtifactParamsSchema, value, "artifact path parameters");
 
 export const parseNoQuery = (value: unknown): void => {
   parseContract(EmptyQuerySchema, value, "request query");

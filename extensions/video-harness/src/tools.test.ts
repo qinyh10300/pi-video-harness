@@ -107,6 +107,17 @@ describe("Pi-compatible tool schemas", () => {
         required,
       });
     }
+    expect(branchForAction(branches, "wait")).toMatchObject({
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 200 },
+        waitMs: {
+          type: "integer",
+          minimum: 0,
+          maximum: 30_000,
+          default: 25_000,
+        },
+      },
+    });
   });
 
   it("sends each action's declared fields in the matching client request", async () => {
@@ -114,6 +125,7 @@ describe("Pi-compatible tool schemas", () => {
       reroll: vi.fn(async () => ({ ok: true })),
       cancelPipeline: vi.fn(async () => ({ ok: true })),
       decideGate: vi.fn(async () => ({ ok: true })),
+      getEvents: vi.fn(async () => ({ ok: true })),
     } as unknown as VideoHarnessClient;
     const videoJob = createVideoHarnessTools(client).find(
       ({ name }) => name === "video_job",
@@ -138,5 +150,17 @@ describe("Pi-compatible tool schemas", () => {
       },
       undefined,
     );
+
+    await videoJob?.execute({
+      action: "wait",
+      pipelineId: "pipeline-1",
+      after: 9,
+      limit: 20,
+    });
+    expect(client.getEvents).toHaveBeenCalledWith("pipeline-1", {
+      after: 9,
+      limit: 20,
+      waitMs: 25_000,
+    });
   });
 });

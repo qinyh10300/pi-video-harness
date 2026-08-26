@@ -109,21 +109,37 @@ export class PipelineVideoHarnessService implements VideoHarnessService {
   async capabilities(
     _context: ServiceRequestContext,
   ): Promise<CapabilitiesReport> {
-    const capabilities = await this.#orchestrator.capabilities();
+    const [capabilities, externalBackends] = await Promise.all([
+      this.#orchestrator.capabilities(),
+      this.#externalBackendHealth?.() ?? Promise.resolve([]),
+    ]);
+    const backends = new Map(
+      [...capabilities.backends, ...externalBackends].map((backend) => [
+        backend.backend,
+        backend,
+      ]),
+    );
     return {
+      phase: "phase_a",
+      apiVersion: "v1",
+      executionMode: "offline_fake",
+      checkedAt: new Date().toISOString(),
       profiles: capabilities.profiles,
+      defaultProfileId: capabilities.defaultProfileId,
+      backends: [...backends.values()],
+      safety: capabilities.safety,
       limits: {
         aspectRatios: ["16:9", "9:16"],
         durationSeconds: 5,
         frameCount: 81,
         fps: 16,
         imageCandidateCount: { minimum: 1, maximum: 4 },
-        maxConcurrentGenerations: 1,
+        maxConcurrentGenerations: capabilities.safety.maxConcurrentGenerations,
       },
       protections: {
-        paidProvidersEnabled: false,
+        paidProvidersEnabled: capabilities.safety.paidProvidersEnabled,
         modelFallbackEnabled: false,
-        automaticQualityReroll: false,
+        automaticQualityReroll: capabilities.safety.automaticQualityReroll,
         planApprovalRequired: true,
       },
     };
@@ -225,9 +241,63 @@ export class PipelineVideoHarnessService implements VideoHarnessService {
     pipelineId: string,
     _context: ServiceRequestContext,
   ): Promise<ArtifactCollection> {
+    const snapshot = this.#orchestrator.getPipeline(pipelineId);
+    const artifacts = snapshot.artifacts.map((artifact) => {
+      const current = this.#orchestrator.isArtifactCurrent(
+        pipelineId,
+        artifact.artifactId,
+      );
+      const accepted =
+        snapshot.pipeline.status === "completed" &&
+        current &&
+        artifact.kind === "video_final";
+      return {
+        ...artifact,
+        current,
+        accepted,
+        contentPath: `/v1/pipelines/${encodeURIComponent(
+          pipelineId,
+        )}/artifacts/${encodeURIComponent(artifact.artifactId)}/content`,
+      };
+    });
+    const currentArtifactIds = artifacts
+      .filter((artifact) => artifact.current)
+      .map((artifact) => artifact.artifactId);
+    const supersededArtifactIds = artifacts
+      .filter((artifact) => !artifact.current)
+      .map((artifact) => artifact.artifactId);
+    const acceptedArtifactIds = artifacts
+      .filter((artifact) => artifact.accepted)
+      .map((artifact) => artifact.artifactId);
     return {
-      artifacts: this.#orchestrator.listArtifacts(pipelineId),
+      pipelineStatus: snapshot.pipeline.status,
+      pipelineVersion: snapshot.pipeline.version,
+      artifacts,
       relations: this.#orchestrator.listArtifactRelations(pipelineId),
+      currentArtifactIds,
+      supersededArtifactIds,
+      acceptedArtifactIds,
+      resultReady: acceptedArtifactIds.length > 0,
     };
+  }
+
+  async getPipelineArtifactContent(
+    pipelineId: string,
+    artifactId: string,
+    _context: ServiceRequestContext,
+  ) {
+    const bytes = await this.#orchestrator.readArtifactContent(
+      pipelineId,
+      artifactId,
+    );
+    const artifact = this.#orchestrator
+      .listArtifacts(pipelineId)
+      .find((candidate) => candidate.artifactId === artifactId);
+    // readArtifactContent validates ownership and therefore guarantees the
+    // descriptor is present in this Pipeline.
+    if (artifact === undefined) {
+      throw new Error("Artifact descriptor disappeared after verified read");
+    }
+    return { artifact, bytes };
   }
 }

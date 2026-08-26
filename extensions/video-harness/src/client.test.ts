@@ -65,4 +65,80 @@ describe("VideoHarnessClient", () => {
       backendError: { code: "approval_required" },
     });
   });
+
+  it("sends bounded event cursors and keeps long-poll transport alive", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 20);
+        init?.signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            reject(init.signal?.reason);
+          },
+          { once: true },
+        );
+      });
+      return Response.json({
+        events: [],
+        nextAfterSequence: 7,
+        timedOut: true,
+      });
+    });
+    const client = new VideoHarnessClient({ requestTimeoutMs: 1, fetch });
+
+    await expect(
+      client.getEvents("pipeline-1", {
+        after: 7,
+        limit: 20,
+        waitMs: 10,
+      }),
+    ).resolves.toMatchObject({ nextAfterSequence: 7, timedOut: true });
+    expect(String(fetch.mock.calls[0]?.[0])).toBe(
+      "http://127.0.0.1:8787/v1/pipelines/pipeline-1/events?afterSequence=7&limit=20&waitMs=10",
+    );
+    expect(() => client.getEvents("pipeline-1", { limit: 201 })).toThrow(
+      /limit/,
+    );
+    expect(() => client.getEvents("pipeline-1", { waitMs: -1 })).toThrow(
+      /waitMs/,
+    );
+  });
+
+  it("downloads authenticated Artifact bytes with response metadata", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: {
+          "content-type": "video/mp4",
+          "content-length": "3",
+          etag: '"abc"',
+          "x-request-id": "request-download",
+        },
+      }),
+    );
+    const client = new VideoHarnessClient({
+      authToken: "local-secret",
+      fetch,
+    });
+
+    const result = await client.downloadArtifact(
+      "pipeline/one",
+      "artifact/two",
+    );
+
+    expect([...result.bytes]).toEqual([1, 2, 3]);
+    expect(result).toMatchObject({
+      mimeType: "video/mp4",
+      sizeBytes: 3,
+      etag: '"abc"',
+      requestId: "request-download",
+    });
+    const [url, request] = fetch.mock.calls[0] ?? [];
+    expect(String(url)).toBe(
+      "http://127.0.0.1:8787/v1/pipelines/pipeline%2Fone/artifacts/artifact%2Ftwo/content",
+    );
+    const headers = new Headers(request?.headers);
+    expect(headers.get("accept")).toBe("*/*");
+    expect(headers.get("authorization")).toBe("Bearer local-secret");
+  });
 });

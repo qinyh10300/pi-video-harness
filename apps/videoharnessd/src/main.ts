@@ -36,11 +36,33 @@ export type AppDependenciesFactory = (
 ) => Promise<AppDependencies>;
 
 export class DependencyCompositionError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options: ErrorOptions = {}) {
+    super(message, options);
     this.name = "DependencyCompositionError";
   }
 }
+
+const safeListenError = (error: unknown, config: ServiceConfig): unknown => {
+  const code =
+    typeof error === "object" &&
+    error !== null &&
+    typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : undefined;
+  if (code === "EADDRINUSE") {
+    return new DependencyCompositionError(
+      `VideoHarness cannot listen on ${config.host}:${config.port}: address already in use`,
+      { cause: error },
+    );
+  }
+  if (code === "EACCES") {
+    return new DependencyCompositionError(
+      `VideoHarness cannot listen on ${config.host}:${config.port}: permission denied`,
+      { cause: error },
+    );
+  }
+  return error;
+};
 
 /**
  * Creates the Phase A local composition. The only executable model drivers are
@@ -117,8 +139,12 @@ export const startServer = async (
   try {
     await server.listen({ host: config.host, port: config.port });
   } catch (error) {
-    await dependencies.close?.();
-    throw error;
+    try {
+      await dependencies.close?.();
+    } catch {
+      // Preserve the safe, actionable listen failure as the startup cause.
+    }
+    throw safeListenError(error, config);
   }
 
   let closed = false;
@@ -137,7 +163,7 @@ export const startServer = async (
   };
 };
 
-const startupErrorMessage = (error: unknown): string => {
+export const startupErrorMessage = (error: unknown): string => {
   if (
     error instanceof ConfigurationError ||
     error instanceof DependencyCompositionError
@@ -147,8 +173,21 @@ const startupErrorMessage = (error: unknown): string => {
   return "VideoHarness failed to start";
 };
 
+export const startupSummary = (config: ServiceConfig): string => {
+  const host = config.host.includes(":") ? `[${config.host}]` : config.host;
+  return [
+    `VideoHarness listening on http://${host}:${config.port}`,
+    "api=v1",
+    "phase=phase_a",
+    "mode=offline_fake",
+    `profile=${config.defaultProfileId}`,
+    `auth=${config.authToken === undefined ? "disabled" : "required"}`,
+  ].join(" | ");
+};
+
 export const main = async (): Promise<void> => {
   const running = await startServer();
+  process.stdout.write(`${startupSummary(running.config)}\n`);
   let shuttingDown = false;
   const shutDown = (): void => {
     if (shuttingDown) return;

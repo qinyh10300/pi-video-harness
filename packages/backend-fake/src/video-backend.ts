@@ -226,6 +226,7 @@ export class FakeVideoBackend<
       modelId: "fake-video-v1",
       modelRevision: "deterministic-json-v1",
       backendRequestId: ref.backendRequestId ?? ref.jobId,
+      seed: resolved.seed,
       promptIds: [...new Set(command.promptIds ?? [])],
     };
     const payloadEntry: FakeArtifactPayload = {

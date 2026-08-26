@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ApprovalGateSchema,
+  ArtifactDescriptorSchema,
   ArtifactRelationSchema,
   ERROR_RETRY_DISPOSITION,
   GATE_STATUSES,
@@ -141,5 +142,28 @@ describe("pipeline domain schemas", () => {
         relation: "normalized_from",
       }),
     ).toBe(true);
+  });
+
+  it("stores a canonical video seed explicitly instead of encoding it in the ID", () => {
+    const artifact = {
+      artifactId: "preview-with-an-opaque-id",
+      pipelineId: "pipeline-1",
+      stageId: "stage-1",
+      runId: "run-1",
+      kind: "video_preview",
+      mimeType: "video/mp4",
+      sha256: "c".repeat(64),
+      sizeBytes: 1,
+      storagePath: "videos/preview.mp4",
+      seed: "42",
+      promptIds: [],
+    };
+    expect(Value.Check(ArtifactDescriptorSchema, artifact)).toBe(true);
+    expect(
+      Value.Check(ArtifactDescriptorSchema, { ...artifact, seed: "0042" }),
+    ).toBe(false);
+    expect(
+      Value.Check(ArtifactDescriptorSchema, { ...artifact, seed: -1 }),
+    ).toBe(false);
   });
 });

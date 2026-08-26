@@ -2,6 +2,7 @@ import type {
   ApprovalGate,
   ArtifactDescriptor,
   ArtifactRelation,
+  BackendHealth,
   CancelPipelineRequest,
   CreatePipelineRequest,
   CreatePlanRequest,
@@ -48,7 +49,14 @@ export interface HealthReport {
  * generation command validation live in contracts/pipeline, not in HTTP.
  */
 export interface CapabilitiesReport {
+  readonly phase: "phase_a";
+  readonly apiVersion: "v1";
+  readonly executionMode: "offline_fake";
+  readonly checkedAt: string;
   readonly profiles: readonly Readonly<Record<string, unknown>>[];
+  readonly defaultProfileId: string;
+  readonly backends: readonly BackendHealth[];
+  readonly safety: Readonly<Record<string, unknown>>;
   readonly limits: Readonly<Record<string, unknown>>;
   readonly protections: Readonly<Record<string, unknown>>;
 }
@@ -88,9 +96,27 @@ export interface PipelineEventsPage {
   readonly timedOut: boolean;
 }
 
+export interface ArtifactView extends ArtifactDescriptor {
+  readonly current: boolean;
+  readonly accepted: boolean;
+  /** Authenticated API path; never a filesystem path. */
+  readonly contentPath: string;
+}
+
 export interface ArtifactCollection {
-  readonly artifacts: readonly ArtifactDescriptor[];
+  readonly pipelineStatus: PipelineRun["status"];
+  readonly pipelineVersion: number;
+  readonly artifacts: readonly ArtifactView[];
   readonly relations: readonly ArtifactRelation[];
+  readonly currentArtifactIds: readonly string[];
+  readonly supersededArtifactIds: readonly string[];
+  readonly acceptedArtifactIds: readonly string[];
+  readonly resultReady: boolean;
+}
+
+export interface ArtifactContent {
+  readonly artifact: ArtifactDescriptor;
+  readonly bytes: Buffer;
 }
 
 /**
@@ -145,4 +171,9 @@ export interface VideoHarnessService {
     pipelineId: string,
     context: ServiceRequestContext,
   ): Promise<ArtifactCollection>;
+  getPipelineArtifactContent(
+    pipelineId: string,
+    artifactId: string,
+    context: ServiceRequestContext,
+  ): Promise<ArtifactContent>;
 }

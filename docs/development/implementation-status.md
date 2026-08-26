@@ -1,6 +1,6 @@
 # 实现状态
 
-- 更新日期：2026-08-26
+- 更新日期：2026-08-27
 - 当前可运行阶段：Phase A（离线 Fake Pipeline）
 - 默认 Profile：`fake-image2-video-v1`
 - 真实 Profile：`gpt-image2-wan22-i2v-a14b-v1`（禁用）
@@ -18,12 +18,12 @@ payload，不是 MP4、不可播放，也不代表真实成片质量。
 
 ## 完成度
 
-| 阶段                      | 状态   | 已有/待办                                                                                                                                                                                  |
-| ------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Phase A：离线基础         | 已完成 | contracts、版本化 Profile/哈希、SQLite WAL、幂等、Outbox、Pipeline/StageRun/Gate、Artifact lineage、四 Gate Fake E2E、HTTP API、Pi-compatible Client/工具定义、取消/reroll、crash recovery |
-| Phase B：GPT-Image-2      | 未完成 | 只有固定 `gpt-image-2-2026-04-21` 命令契约和 disabled Driver；OpenAI SDK、真实生成/编辑、usage、base64 导入、远端对账和费用保护待办                                                        |
-| Phase C：A14B             | 未完成 | 只有 `wan22-i2v-a14b`/禁止回退契约和 disabled Driver；checkpoint/精度/Workflow 哈希、ComfyUI HTTP/WebSocket、queue/history、480P/720P 和硬件基线待办                                       |
-| Phase D：真实质量与 Pi UX | 未完成 | 完整 PNG 解码/颜色管理、ffmpeg/ffprobe、H.264 MP4/poster/thumbnail、Golden Set、正式 Pi SDK 注册、审批卡片和可安装 Package 待办                                                            |
+| 阶段                      | 状态   | 已有/待办                                                                                                                                                                                                      |
+| ------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Phase A：离线基础         | 已完成 | contracts、版本化 Profile/哈希、SQLite WAL、幂等、Outbox、Pipeline/StageRun/Gate、Artifact lineage/内容读取/结果当前性、四 Gate Fake E2E、HTTP API、Pi-compatible Client/工具定义、取消/reroll、crash recovery |
+| Phase B：GPT-Image-2      | 未完成 | 只有固定 `gpt-image-2-2026-04-21` 命令契约和 disabled Driver；OpenAI SDK、真实生成/编辑、usage、base64 导入、远端对账和费用保护待办                                                                            |
+| Phase C：A14B             | 未完成 | 只有 `wan22-i2v-a14b`/禁止回退契约和 disabled Driver；checkpoint/精度/Workflow 哈希、ComfyUI HTTP/WebSocket、queue/history、480P/720P 和硬件基线待办                                                           |
+| Phase D：真实质量与 Pi UX | 未完成 | 完整 PNG 解码/颜色管理、ffmpeg/ffprobe、H.264 MP4/poster/thumbnail、Golden Set、正式 Pi SDK 注册、审批卡片和可安装 Package 待办                                                                                |
 
 ## 已验证内容
 
@@ -52,14 +52,29 @@ payload，不是 MP4、不可播放，也不代表真实成片质量。
   intent，对提交结果不明的运行标记 `outcome_unknown` 而不伪装成已取消；
 - Pipeline 取消状态会阻断旧 Gate continuation、旧 Backend
   intent 和本地后处理继续发布；与取消并发到达的迟到产物仍可审计，但一律标记为
-  `superseded`；
+  `superseded`。如果供应商引用在取消结算后才返回，只补记引用并保持 Run 的终态，不会把
+  `outcome_unknown` 重新转回 `submitted`；
 - Wan negative
   Prompt 由固定提交的官方默认值、版本化项目约束和可选用户追加组成；Plan 持久化组件来源、版本、组件哈希、合并策略及最终哈希；
 - 后端输出与 Stage 输入建立 `generated_from`，最终视频 ancestry 可回溯
-  `wan_input_frame` 和首帧候选；poster/thumbnail 从输入帧派生；
+  `wan_input_frame`
+  和首帧候选；poster/thumbnail 从输入帧派生。视频 seed 作为最长 20 位的规范化非负十进制 Artifact 字段持久化，Gate
+  continuation 会拒绝被污染的 seed，成片晋级不依赖解析 Artifact ID；
 - 真实 Profile 批准后进入 `needs_attention`，不启动 Fake 或其他模型作为回退；
 - HTTP 提供 health、capabilities、plan、pipeline、事件长轮询、Gate、reroll、cancel 和 artifacts 接口；`POST /v1/assets`
   尚未实现；
+- capabilities 明确返回 `phase: "phase_a"`、`apiVersion: "v1"`、
+  `executionMode: "offline_fake"`、检查时间、默认 Profile、后端健康和安全开关，避免把保留的真实 Profile 误读成可执行 Provider；
+- Artifact 结果同时返回 Pipeline 状态/版本、当前/已 supersede/已验收 ID 列表和
+  `resultReady`；每项提供 `current`、`accepted` 和受控
+  `contentPath`。只有已完成 Pipeline 的当前 `video_final`
+  才标记为 accepted，Artifact 内容端点在返回前校验完整性并支持 SHA-256 ETag；
+- HTTP 事件读取保留立即读取默认值，并支持 `afterSequence`、1–200 的 `limit`
+  和最长 30 秒长轮询；Pi `video_job.wait` 省略 `waitMs` 时默认等待 25 秒，响应
+  `nextAfterSequence` 可直接作为下一次 `after`，HTTP
+  Client 为长轮询额外保留 5 秒 transport timeout 余量；
+- `reject` 已纳入 Pi 工具动作；与 `request_changes` 一样会决定当前 Gate 并停在
+  `needs_attention`，不会隐式取消或删除历史产物；
 - HTTP Client 和 `video_generate`、`video_job`、`video_capabilities`
   工具定义已有测试，但这不等于正式 Pi SDK 注册。
 
@@ -67,15 +82,16 @@ payload，不是 MP4、不可播放，也不代表真实成片质量。
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm build
-pnpm typecheck
-pnpm test
+pnpm check
 ```
 
 ## 安全开关与已知限制
 
 - `videoharnessd` 默认监听 `127.0.0.1:8787`，可用 `VIDEOHARNESS_AUTH_TOKEN`
   开启所有 API 的 Bearer 鉴权；
+- 根目录 `pnpm dev` 和构建后的 `pnpm start` 会自动加载存在的
+  `.env`；空 Token 只适合 loopback，配置会拒绝无 Token 的非 loopback 监听；非 loopback 部署还必须通过 TLS
+  reverse proxy 提供 HTTPS；启动摘要不会泄露 Token；
 - `VIDEOHARNESS_ENABLE_CLOUD_IMAGE` 默认为 `false`，真实 Profile 为
   `productionReady: false`；
 - `DisabledOpenAIImageDriver` 和 `DisabledComfyUIDriver`
@@ -86,6 +102,9 @@ pnpm test
 - `POST /v1/assets` 和 Prompt revision/resume API 尚未实现；非空
   `referenceAssetIds` 会在计划落库前被拒绝，`request_changes`
   当前只把 Pipeline 安全停在 `needs_attention`；
+- OpenAI timeout/retry、Prompt 日志模式、Artifact
+  retention、并发、磁盘和内存环境变量在 Phase
+  A 仅解析/校验，对应真实 Provider、清理、调度和资源预检尚未接通；
 - 立即回收旧 Outbox
   lease 的启动恢复仅适用于当前单服务进程；未来多进程 Worker 必须增加 leader/lease 协调；
 - Fake Backend 可以证明 result checkpoint 回放和 reconcile-first

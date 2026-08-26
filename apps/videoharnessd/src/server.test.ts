@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  ArtifactDescriptor,
   ImageToVideoPlan,
   PipelineRun,
 } from "@pi-video-harness/contracts";
@@ -27,12 +28,32 @@ const pipelineFixture = {
   gates: [],
 } satisfies PipelineView;
 
+const artifactFixture = {
+  artifactId: "artifact-1",
+  pipelineId: "pipeline-1",
+  stageId: "stage-1",
+  runId: "run-1",
+  kind: "video_final",
+  mimeType: "text/plain; charset=utf-8",
+  sha256: "b".repeat(64),
+  sizeBytes: 7,
+  storagePath: "pipelines/pipeline-1/artifact-1.txt",
+  promptIds: [],
+} satisfies ArtifactDescriptor;
+
 const makeService = (
   overrides: Partial<VideoHarnessService> = {},
 ): VideoHarnessService => ({
   health: async () => ({ status: "ok", checks: {} }),
   capabilities: async () => ({
+    phase: "phase_a",
+    apiVersion: "v1",
+    executionMode: "offline_fake",
+    checkedAt: "2026-08-27T00:00:00.000Z",
     profiles: [],
+    defaultProfileId: "fake-image2-video-v1",
+    backends: [],
+    safety: { paidProvidersEnabled: false },
     limits: {},
     protections: { planApprovalRequired: true },
   }),
@@ -48,7 +69,20 @@ const makeService = (
   decideGate: async () => pipelineFixture,
   cancelPipeline: async () => pipelineFixture,
   rerollPipeline: async () => pipelineFixture,
-  getPipelineArtifacts: async () => ({ artifacts: [], relations: [] }),
+  getPipelineArtifacts: async () => ({
+    pipelineStatus: "awaiting_approval",
+    pipelineVersion: 0,
+    artifacts: [],
+    relations: [],
+    currentArtifactIds: [],
+    supersededArtifactIds: [],
+    acceptedArtifactIds: [],
+    resultReady: false,
+  }),
+  getPipelineArtifactContent: async () => ({
+    artifact: artifactFixture,
+    bytes: Buffer.from("payload"),
+  }),
   ...overrides,
 });
 
@@ -60,8 +94,14 @@ const pipelineRequest = {
 
 describe("buildServer", () => {
   it("uses optional Bearer auth and returns a safe request ID", async () => {
+    const getPipelineArtifactContent = vi.fn<
+      VideoHarnessService["getPipelineArtifactContent"]
+    >(async () => ({
+      artifact: artifactFixture,
+      bytes: Buffer.from("payload"),
+    }));
     const server = buildServer(
-      makeService(),
+      makeService({ getPipelineArtifactContent }),
       loadServiceConfig({ VIDEOHARNESS_AUTH_TOKEN: "server-secret" }),
     );
 
@@ -89,6 +129,29 @@ describe("buildServer", () => {
       headers: { authorization: "Bearer server-secret" },
     });
     expect(unknownQuery.statusCode).toBe(400);
+
+    const deniedArtifact = await server.inject({
+      method: "GET",
+      url: "/v1/pipelines/pipeline-1/artifacts/artifact-1/content",
+    });
+    expect(deniedArtifact.statusCode).toBe(401);
+    expect(getPipelineArtifactContent).not.toHaveBeenCalled();
+
+    const notModified = await server.inject({
+      method: "GET",
+      url: "/v1/pipelines/pipeline-1/artifacts/artifact-1/content",
+      headers: {
+        authorization: "Bearer server-secret",
+        "if-none-match": `"${artifactFixture.sha256}"`,
+      },
+    });
+    expect(notModified.statusCode).toBe(304);
+    expect(notModified.body).toBe("");
+    expect(getPipelineArtifactContent).toHaveBeenCalledExactlyOnceWith(
+      "pipeline-1",
+      "artifact-1",
+      expect.objectContaining({ requestId: expect.any(String) }),
+    );
 
     await server.close();
   });
@@ -252,14 +315,24 @@ describe("buildServer", () => {
         method: "GET",
         url: "/v1/pipelines/pipeline-1/artifacts",
       }),
+      server.inject({
+        method: "GET",
+        url: "/v1/pipelines/pipeline-1/artifacts/artifact-1/content",
+      }),
     ];
     const responses = await Promise.all(requests);
     expect(responses.map(({ statusCode }) => statusCode)).toEqual([
-      200, 200, 200, 200, 200, 200,
+      200, 200, 200, 200, 200, 200, 200,
     ]);
     expect(decideGate).toHaveBeenCalledOnce();
     expect(cancelPipeline).toHaveBeenCalledOnce();
     expect(rerollPipeline).toHaveBeenCalledOnce();
+    expect(responses.at(-1)?.headers["content-type"]).toBe(
+      "text/plain; charset=utf-8",
+    );
+    expect(responses.at(-1)?.headers["content-length"]).toBe("7");
+    expect(responses.at(-1)?.headers.etag).toBe(`"${"b".repeat(64)}"`);
+    expect(responses.at(-1)?.body).toBe("payload");
 
     const invalidDecision = await server.inject({
       method: "POST",

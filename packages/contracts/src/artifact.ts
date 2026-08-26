@@ -46,6 +46,17 @@ export const ArtifactDescriptorSchema = Type.Object(
     modelId: Type.Optional(NonEmptyStringSchema),
     modelRevision: Type.Optional(NonEmptyStringSchema),
     backendRequestId: Type.Optional(NonEmptyStringSchema),
+    /**
+     * Canonical non-negative decimal generation seed. This is explicit
+     * lineage data; consumers must never infer it from an Artifact ID.
+     */
+    seed: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 20,
+        pattern: "^(0|[1-9][0-9]*)$",
+      }),
+    ),
     promptIds: Type.Array(IdentifierSchema, { uniqueItems: true }),
     qaReportArtifactId: Type.Optional(IdentifierSchema),
   },

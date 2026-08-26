@@ -57,5 +57,24 @@ describe("loadServiceConfig", () => {
         VIDEOHARNESS_DEFAULT_PIPELINE_PROFILE: "missing-profile-v1",
       }),
     ).toThrowError(/DEFAULT_PIPELINE_PROFILE/);
+    expect(() =>
+      loadServiceConfig({ VIDEOHARNESS_HOST: "0.0.0.0" }),
+    ).toThrowError(/VIDEOHARNESS_AUTH_TOKEN/);
+  });
+
+  it("requires authentication off loopback", () => {
+    const config = loadServiceConfig({
+      VIDEOHARNESS_HOST: "192.0.2.10",
+      VIDEOHARNESS_AUTH_TOKEN: "local-network-secret",
+    });
+    expect(config.host).toBe("192.0.2.10");
+    expect(toPublicServiceConfig(config).authConfigured).toBe(true);
+    expect(JSON.stringify(toPublicServiceConfig(config))).not.toContain(
+      "local-network-secret",
+    );
+
+    for (const host of ["localhost", "127.0.0.1", "127.12.34.56", "::1"]) {
+      expect(loadServiceConfig({ VIDEOHARNESS_HOST: host }).host).toBe(host);
+    }
   });
 });

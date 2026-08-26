@@ -13,6 +13,7 @@ import {
   serializeHttpError,
 } from "./http-errors.js";
 import {
+  parseArtifactParams,
   parseCancelPipelineRequest,
   parseCreatePipelineRequest,
   parseCreatePlanRequest,
@@ -259,6 +260,28 @@ export const buildServer = (
       ),
     );
   });
+
+  server.get(
+    "/v1/pipelines/:pipelineId/artifacts/:artifactId/content",
+    async (request, reply) => {
+      parseNoQuery(request.query);
+      const { pipelineId, artifactId } = parseArtifactParams(request.params);
+      const { artifact, bytes } = await service.getPipelineArtifactContent(
+        pipelineId,
+        artifactId,
+        requestContext(request, reply),
+      );
+      const etag = `"${artifact.sha256}"`;
+      if (request.headers["if-none-match"] === etag) {
+        return reply.header("etag", etag).code(304).send();
+      }
+      return reply
+        .header("content-type", artifact.mimeType)
+        .header("content-length", String(bytes.byteLength))
+        .header("etag", etag)
+        .send(bytes);
+    },
+  );
 
   return server;
 };
