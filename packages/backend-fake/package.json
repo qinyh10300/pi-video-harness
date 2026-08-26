@@ -1,0 +1,25 @@
+{
+  "name": "@pi-video-harness/backend-fake",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic, network-free image and video backends for tests.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "vitest run --root ../.. packages/backend-fake/src",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@pi-video-harness/contracts": "workspace:*"
+  }
+}

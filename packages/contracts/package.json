@@ -1,0 +1,29 @@
+{
+  "name": "@pi-video-harness/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime schemas and TypeScript contracts for VideoHarness.",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "vitest run --root ../.. packages/contracts/src",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "0.34.52"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@pi-video-harness/videoharnessd",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/main.ts --format esm --sourcemap --clean --out-dir dist",
+    "clean": "rm -rf dist",
+    "start": "node dist/main.js",
+    "test": "vitest run --root ../.. apps/videoharnessd/src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pi-video-harness/backend-comfyui": "workspace:*",
+    "@pi-video-harness/backend-fake": "workspace:*",
+    "@pi-video-harness/backend-openai-image": "workspace:*",
+    "@pi-video-harness/contracts": "workspace:*",
+    "@pi-video-harness/core": "workspace:*",
+    "@pi-video-harness/media": "workspace:*",
+    "@pi-video-harness/pipeline": "workspace:*",
+    "@sinclair/typebox": "0.34.52",
+    "fastify": "5.12.1"
+  }
+}

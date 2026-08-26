@@ -1,0 +1,30 @@
+{
+  "name": "pi-video-harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A Pi-native harness for first-frame-driven video pipelines.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "clean": "pnpm -r --if-present clean",
+    "dev": "tsx apps/videoharnessd/src/main.ts",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "prettier": "3.6.2",
+    "tsup": "8.5.1",
+    "tsx": "4.23.12",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

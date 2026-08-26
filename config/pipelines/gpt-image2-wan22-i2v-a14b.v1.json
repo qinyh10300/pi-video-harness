@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "1",
+  "profileId": "gpt-image2-wan22-i2v-a14b-v1",
+  "displayName": "GPT-Image-2 to Wan2.2-I2V-A14B",
+  "productionReady": false,
+  "disabledReason": "Provider credentials and verified A14B runtime manifests are not configured.",
+  "image": {
+    "backend": "openai-image",
+    "model": "gpt-image-2-2026-04-21",
+    "quality": "medium",
+    "candidateCount": 2,
+    "maxCandidateCount": 4,
+    "sizeByAspectRatio": {
+      "16:9": "1280x720",
+      "9:16": "720x1280"
+    },
+    "format": "png",
+    "background": "opaque"
+  },
+  "video": {
+    "backend": "comfyui",
+    "adapterId": "wan22-i2v-a14b",
+    "allowFallback": false,
+    "negativePromptPolicy": {
+      "mergePolicy": "append-comma-v1",
+      "officialDefault": {
+        "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+        "sha256": "ce96e0324e4b54ce4b6e867f669ca520952e1a34cc116543516b1897f0d3c47e",
+        "sourceId": "Wan-Video/Wan2.2:wan/configs/shared_config.py#sample_neg_prompt",
+        "sourceRevision": "42bf4cfaa384bc21833865abc2f9e6c0e67233dc"
+      },
+      "projectConstraints": {
+        "text": "identity drift, facial deformation, extra limbs or fingers, duplicated objects, melting, warping, flicker, camera shake, sudden cuts, background drift, text or logo distortion",
+        "sha256": "53a4a507f4b07c7a17ff97a7b63875809e63850c9f7da1593bc0abcfe4ef947d",
+        "sourceId": "pi-video-harness:wan-project-negative-prompt",
+        "sourceRevision": "v1"
+      }
+    },
+    "runtimeManifest": {
+      "precisionProfile": "to-be-frozen-in-phase-c",
+      "checkpointManifestHash": "to-be-frozen-in-phase-c",
+      "previewWorkflowHash": "to-be-frozen-in-phase-c",
+      "finalWorkflowHash": "to-be-frozen-in-phase-c"
+    },
+    "preview": {
+      "sizeByAspectRatio": {
+        "16:9": "832x480",
+        "9:16": "480x832"
+      },
+      "frames": 81,
+      "fps": 16,
+      "steps": 40,
+      "shift": 5,
+      "cfgHigh": 3.5,
+      "cfgLow": 3.5,
+      "seedCount": 2
+    },
+    "final": {
+      "sizeByAspectRatio": {
+        "16:9": "1280x720",
+        "9:16": "720x1280"
+      },
+      "frames": 81,
+      "fps": 16,
+      "steps": 40,
+      "shift": 5,
+      "cfgHigh": 3.5,
+      "cfgLow": 3.5,
+      "seedStrategy": "reuse-selected-preview"
+    }
+  },
+  "gates": {
+    "plan": true,
+    "image": true,
+    "preview": true,
+    "final": true
+  }
+}

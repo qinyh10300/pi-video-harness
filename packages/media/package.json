@@ -1,0 +1,22 @@
+{
+  "name": "@pi-video-harness/media",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Safe local artifact storage and dependency-free media preflight checks.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "vitest run --root ../.. packages/media/src",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "noEmit": true,
+    "paths": {
+      "@pi-video-harness/backend-comfyui": [
+        "packages/backend-comfyui/src/index.ts"
+      ],
+      "@pi-video-harness/backend-fake": ["packages/backend-fake/src/index.ts"],
+      "@pi-video-harness/backend-openai-image": [
+        "packages/backend-openai-image/src/index.ts"
+      ],
+      "@pi-video-harness/contracts": ["packages/contracts/src/index.ts"],
+      "@pi-video-harness/core": ["packages/core/src/index.ts"],
+      "@pi-video-harness/media": ["packages/media/src/index.ts"],
+      "@pi-video-harness/pipeline": ["packages/pipeline/src/index.ts"]
+    }
+  },
+  "include": [
+    "apps/**/*.ts",
+    "extensions/**/*.ts",
+    "packages/**/*.ts",
+    "tests/**/*.ts",
+    "vitest.config.ts"
+  ]
+}
