@@ -12,18 +12,23 @@ Pipeline，然后依次经过 `plan_approval`、`image_selection`、 `video_sele
 `final_acceptance` 四个 Gate。整个流程只使用确定性 Fake
 Backends，不访问付费 API、ComfyUI 或 GPU。
 
+Phase A 也已接入力众华援产品知识环：知识库以固定 commit 的只读 Git
+submodule 加载，简单问答返回批准的确定性答案；产品 Plan 绑定 snapshot 与内容/政策哈希，并在计划批准后、首个模型调用前执行本地
+`knowledge_validate`
+Stage。官方术语是“车援宝”和“机动车辆延长保修服务”，不是“车元宝”或保险。
+
 Fake video 的 MIME 是
 `application/vnd.pi-video-harness.fake-video+json`；它是测试专用 JSON
 payload，不是 MP4、不可播放，也不代表真实成片质量。
 
 ## 完成度
 
-| 阶段                      | 状态   | 已有/待办                                                                                                                                                                                                      |
-| ------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Phase A：离线基础         | 已完成 | contracts、版本化 Profile/哈希、SQLite WAL、幂等、Outbox、Pipeline/StageRun/Gate、Artifact lineage/内容读取/结果当前性、四 Gate Fake E2E、HTTP API、Pi-compatible Client/工具定义、取消/reroll、crash recovery |
-| Phase B：GPT-Image-2      | 未完成 | 只有固定 `gpt-image-2-2026-04-21` 命令契约和 disabled Driver；OpenAI SDK、真实生成/编辑、usage、base64 导入、远端对账和费用保护待办                                                                            |
-| Phase C：A14B             | 未完成 | 只有 `wan22-i2v-a14b`/禁止回退契约和 disabled Driver；checkpoint/精度/Workflow 哈希、ComfyUI HTTP/WebSocket、queue/history、480P/720P 和硬件基线待办                                                           |
-| Phase D：真实质量与 Pi UX | 未完成 | 完整 PNG 解码/颜色管理、ffmpeg/ffprobe、H.264 MP4/poster/thumbnail、Golden Set、正式 Pi SDK 注册、审批卡片和可安装 Package 待办                                                                                |
+| 阶段                      | 状态   | 已有/待办                                                                                                                                                                                                                                         |
+| ------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Phase A：离线基础         | 已完成 | contracts、版本化 Profile/哈希、SQLite WAL、幂等、Outbox、Pipeline/StageRun/Gate、Artifact lineage/内容读取/结果当前性、四 Gate Fake E2E、固定产品知识/问答/Plan binding/本地校验、HTTP API、四个 Pi-compatible 工具、取消/reroll、crash recovery |
+| Phase B：GPT-Image-2      | 未完成 | 只有固定 `gpt-image-2-2026-04-21` 命令契约和 disabled Driver；OpenAI SDK、真实生成/编辑、usage、base64 导入、远端对账和费用保护待办                                                                                                               |
+| Phase C：A14B             | 未完成 | 只有 `wan22-i2v-a14b`/禁止回退契约和 disabled Driver；checkpoint/精度/Workflow 哈希、ComfyUI HTTP/WebSocket、queue/history、480P/720P 和硬件基线待办                                                                                              |
+| Phase D：真实质量与 Pi UX | 未完成 | 完整 PNG 解码/颜色管理、ffmpeg/ffprobe、H.264 MP4/poster/thumbnail、Golden Set、正式 Pi SDK 注册、审批卡片和可安装 Package 待办                                                                                                                   |
 
 ## 已验证内容
 
@@ -61,7 +66,20 @@ payload，不是 MP4、不可播放，也不代表真实成片质量。
   和首帧候选；poster/thumbnail 从输入帧派生。视频 seed 作为最长 20 位的规范化非负十进制 Artifact 字段持久化，Gate
   continuation 会拒绝被污染的 seed，成片晋级不依赖解析 Artifact ID；
 - 真实 Profile 批准后进入 `needs_attention`，不启动 Fake 或其他模型作为回退；
-- HTTP 提供 health、capabilities、plan、pipeline、事件长轮询、Gate、reroll、cancel 和 artifacts 接口；`POST /v1/assets`
+- 产品知识库以 Git submodule 固定在完整 commit
+  `4be08769b2e3459075490c7ab31924178ab44cd8`；加载器只将 `01-PRODUCT/**/*.md`
+  allowlist 中 `verification: verified` 且带非空 `assistant_contract`
+  的文档纳入权威 corpus，并拒绝语料哈希漂移；运行时不执行上游 Agent 指令、安装钩子、构建脚本、测试或服务；
+- manifest 的批准 Q&A/claim 必须引用权威文件中的 anchor 和证据片段；确定性问答唯一匹配时返回 canonical
+  answer 与引用，否则返回 `insufficient_evidence`，不调用语言模型补写；
+- 产品 Plan 将知识 snapshot、`corpusHash`、`policyHash`、批准答案/claim 与
+  `bindingHash` 纳入
+  `planHash`；选中的事实必须作为独立逐字行进入 Brief，批准片段之外的产品商业话术与否定后缀由闭合内容规则拒绝。`plan_approval`
+  后、`image_preview` 前运行本地 `knowledge_validate` 并生成
+  `qa_report`，随后在每个图片/视频统一 Backend
+  dispatch 及最终验收前复验；绑定、Plan 内容、语料、policy 或报告不一致时 Stage 失败，Pipeline 进入
+  `needs_attention`，且不会提交紧随其后的模型调用；首次校验失败时全部图片/视频调用数保持为零；
+- HTTP 提供 health、capabilities、确定性知识问答、plan、pipeline、事件长轮询、Gate、reroll、cancel 和 artifacts 接口；`POST /v1/assets`
   尚未实现；
 - capabilities 明确返回 `phase: "phase_a"`、`apiVersion: "v1"`、
   `executionMode: "offline_fake"`、检查时间、默认 Profile、后端健康和安全开关，避免把保留的真实 Profile 误读成可执行 Provider；
@@ -75,8 +93,8 @@ payload，不是 MP4、不可播放，也不代表真实成片质量。
   Client 为长轮询额外保留 5 秒 transport timeout 余量；
 - `reject` 已纳入 Pi 工具动作；与 `request_changes` 一样会决定当前 Gate 并停在
   `needs_attention`，不会隐式取消或删除历史产物；
-- HTTP Client 和 `video_generate`、`video_job`、`video_capabilities`
-  工具定义已有测试，但这不等于正式 Pi SDK 注册。
+- HTTP Client 和 `video_generate`、`video_job`、`product_knowledge_qa`、
+  `video_capabilities` 四个工具定义已有测试，但这不等于正式 Pi SDK 注册。
 
 验证命令：
 
@@ -110,6 +128,9 @@ pnpm check
 - Fake Backend 可以证明 result checkpoint 回放和 reconcile-first
   fallback 路径；真实 OpenAI/ComfyUI Adapter 仍必须实现供应商侧 submission
   key 幂等和远端 job 对账；
+- 当前知识保障严格覆盖 Harness 管理的版本化脚本、Brief、overlay、voiceover 中公开产品事实与 Plan
+  binding，但不证明上游知识库自身绝对正确；真实画面文字和最终音轨尚无 OCR/ASR 全量语义验证，不能宣称所有像素与声音均已通过知识一致性检查；
 - 未配鉴权的开发服务不应暴露到公网；真实密钥不得写入 Git、日志、manifest 或 fixture。
 
-最小本机启动和 curl 四 Gate 流程见项目 [README](../../README.md)。
+最小本机启动和 curl 四 Gate 流程见项目
+[README](../../README.md)，知识快照、问答、Stage 顺序和更新流程见[产品知识 Grounding 设计](knowledge-grounding.md)。

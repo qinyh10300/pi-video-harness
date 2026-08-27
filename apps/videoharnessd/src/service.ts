@@ -8,6 +8,8 @@ import type {
   CreatePlanRequest,
   GateDecisionInput,
   ImageToVideoPlan,
+  KnowledgeQueryInput,
+  KnowledgeQueryResult,
   PipelineRun,
   PipelineStage,
   RerollRequest,
@@ -128,6 +130,10 @@ export interface ArtifactContent {
 export interface VideoHarnessService {
   health(context: ServiceRequestContext): Promise<HealthReport>;
   capabilities(context: ServiceRequestContext): Promise<CapabilitiesReport>;
+  queryKnowledge(
+    input: KnowledgeQueryInput,
+    context: ServiceRequestContext,
+  ): Promise<KnowledgeQueryResult>;
 
   createPlan(
     input: CreatePlanRequest,

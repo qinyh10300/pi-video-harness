@@ -22,6 +22,9 @@ export default defineConfig({
       ),
       "@pi-video-harness/core": fromRoot("./packages/core/src/index.ts"),
       "@pi-video-harness/media": fromRoot("./packages/media/src/index.ts"),
+      "@pi-video-harness/knowledge": fromRoot(
+        "./packages/knowledge/src/index.ts",
+      ),
       "@pi-video-harness/pipeline": fromRoot(
         "./packages/pipeline/src/index.ts",
       ),

@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ContractValidationError } from "@pi-video-harness/contracts";
+
 import { VideoHarnessClient, VideoHarnessHttpError } from "./client.js";
+
+const knowledgeSnapshot = {
+  knowledgeBaseId: "lynxon-product-knowledge",
+  policyId: "lynxon-video-content-policy-v1",
+  repoUrl: "https://github.com/Futura-IO/web-Lynxon-product-knowledge.git",
+  revision: "4".repeat(40),
+  corpusHash: "c".repeat(64),
+  policyHash: "d".repeat(64),
+};
 
 describe("VideoHarnessClient", () => {
   it("uses a bearer token without putting it in the URL", async () => {
@@ -36,6 +47,62 @@ describe("VideoHarnessClient", () => {
     expect(String(fetch.mock.calls[0]?.[0])).toBe(
       "http://127.0.0.1:8787/v1/plans/..%2F..%2Funexpected",
     );
+  });
+
+  it("posts deterministic product-knowledge questions as JSON", async () => {
+    const result = {
+      status: "insufficient_evidence",
+      reason: "no_approved_answer",
+      snapshot: knowledgeSnapshot,
+    };
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json(result));
+    const client = new VideoHarnessClient({ fetch });
+    const input = {
+      knowledgeBaseId: "lynxon-product-knowledge",
+      policyId: "lynxon-video-content-policy-v1",
+      question: "等待期多久？",
+    };
+
+    await expect(client.queryKnowledge(input)).resolves.toEqual(result);
+
+    const [url, request] = fetch.mock.calls[0] ?? [];
+    expect(String(url)).toBe("http://127.0.0.1:8787/v1/knowledge/queries");
+    expect(request?.method).toBe("POST");
+    expect(new Headers(request?.headers).get("content-type")).toBe(
+      "application/json",
+    );
+    expect(request?.body).toBe(JSON.stringify(input));
+  });
+
+  it("rejects forged or malformed knowledge-query success payloads", async () => {
+    const invalidPayloads = [
+      {
+        status: "answered",
+        answer: "可自由改写的未验证答案",
+        snapshot: knowledgeSnapshot,
+      },
+      {
+        status: "insufficient_evidence",
+        reason: "no_approved_answer",
+      },
+    ];
+
+    for (const payload of invalidPayloads) {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(Response.json(payload));
+      const client = new VideoHarnessClient({ fetch });
+
+      await expect(
+        client.queryKnowledge({
+          knowledgeBaseId: "lynxon-product-knowledge",
+          policyId: "lynxon-video-content-policy-v1",
+          question: "等待期多久？",
+        }),
+      ).rejects.toBeInstanceOf(ContractValidationError);
+    }
   });
 
   it("maps structured service errors", async () => {

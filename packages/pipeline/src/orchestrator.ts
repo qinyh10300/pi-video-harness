@@ -17,6 +17,7 @@ import {
   GateDecisionInputSchema,
   RerollRequestSchema,
   parseContract,
+  parseCreatePlanInput,
   type ApprovalGate,
   type ArtifactDescriptor,
   type ArtifactKind,
@@ -32,6 +33,9 @@ import {
   type CreatePipelineRequest,
   type GateDecisionInput,
   type ImageToVideoPlan,
+  type KnowledgeBinding,
+  type KnowledgeQueryInput,
+  type KnowledgeQueryResult,
   type PipelineRun,
   type PipelineStage,
   type ReconcileResult,
@@ -60,6 +64,10 @@ import {
   UnsafeArtifactPathError,
   sha256Bytes,
 } from "@pi-video-harness/media";
+import {
+  ProductKnowledgePolicyError,
+  ProductKnowledgeRegistry,
+} from "@pi-video-harness/knowledge";
 
 import { PlanCompiler } from "./plan-compiler.js";
 import {
@@ -135,6 +143,10 @@ export interface OrchestratorHealth {
     readonly schemaVersion: number;
   };
   readonly backends: readonly BackendHealth[];
+  readonly knowledge: {
+    readonly status: "healthy" | "not_configured";
+    readonly snapshot?: ProductKnowledgeRegistry["snapshot"]["ref"];
+  };
   readonly externalProvidersConfigured: false;
 }
 
@@ -158,6 +170,13 @@ export interface OrchestratorCapabilities {
     readonly maxConcurrentGenerations: 1;
   };
   readonly backends: readonly BackendHealth[];
+  readonly knowledge:
+    | {
+        readonly configured: true;
+        readonly queryMode: "deterministic_curated";
+        readonly snapshot: ProductKnowledgeRegistry["snapshot"]["ref"];
+      }
+    | { readonly configured: false };
 }
 
 export interface PipelineOrchestratorOptions {
@@ -166,6 +185,7 @@ export interface PipelineOrchestratorOptions {
   readonly profiles: ProfileRegistry;
   readonly defaultProfileId?: string;
   readonly planCompiler?: PlanCompiler;
+  readonly knowledgeRegistry?: ProductKnowledgeRegistry;
   readonly fakeImageBackend?: FakeImageBackend;
   readonly fakeVideoBackend?: FakeVideoBackend;
   readonly now?: () => Date;
@@ -239,6 +259,7 @@ export class PipelineOperationError extends Error {
 
 const STAGE_ORDER: readonly StageKind[] = [
   "plan_compile",
+  "knowledge_validate",
   "image_preview",
   "image_validate",
   "image_final",
@@ -303,6 +324,7 @@ export class PipelineOrchestrator {
   readonly #profiles: ProfileRegistry;
   readonly #defaultProfileId: string;
   readonly #planCompiler: PlanCompiler;
+  readonly #knowledgeRegistry: ProductKnowledgeRegistry | undefined;
   readonly #imageBackend: FakeImageBackend;
   readonly #videoBackend: FakeVideoBackend;
   readonly #now: () => Date;
@@ -339,6 +361,7 @@ export class PipelineOrchestrator {
     this.#planCompiler =
       options.planCompiler ??
       new PlanCompiler({ now: this.#now, idFactory: this.#idFactory });
+    this.#knowledgeRegistry = options.knowledgeRegistry;
     this.#imageBackend = options.fakeImageBackend ?? new FakeImageBackend();
     this.#videoBackend = options.fakeVideoBackend ?? new FakeVideoBackend();
     this.#workerId = options.workerId ?? `orchestrator-${this.#idFactory()}`;
@@ -357,6 +380,27 @@ export class PipelineOrchestrator {
     return this.#defaultProfileId;
   }
 
+  queryKnowledge(value: unknown): KnowledgeQueryResult {
+    if (this.#knowledgeRegistry === undefined) {
+      throw new PipelineOperationError(
+        "workflow_incompatible",
+        "Product knowledge is not configured for this Harness instance",
+      );
+    }
+    try {
+      return this.#knowledgeRegistry.query(value as KnowledgeQueryInput);
+    } catch (cause) {
+      if (cause instanceof ProductKnowledgePolicyError) {
+        throw new PipelineOperationError(
+          "invalid_request",
+          "The knowledge query does not match the pinned product policy",
+          { cause },
+        );
+      }
+      throw cause;
+    }
+  }
+
   async health(): Promise<OrchestratorHealth> {
     const backends = await Promise.all([
       this.#imageBackend.health(),
@@ -373,6 +417,13 @@ export class PipelineOrchestrator {
         schemaVersion: this.#store.database.schemaVersion,
       },
       backends,
+      knowledge:
+        this.#knowledgeRegistry === undefined
+          ? { status: "not_configured" }
+          : {
+              status: "healthy",
+              snapshot: this.#knowledgeRegistry.snapshot.ref,
+            },
       externalProvidersConfigured: false,
     };
   }
@@ -404,6 +455,14 @@ export class PipelineOrchestrator {
         maxConcurrentGenerations: 1,
       },
       backends,
+      knowledge:
+        this.#knowledgeRegistry === undefined
+          ? { configured: false }
+          : {
+              configured: true,
+              queryMode: "deterministic_curated",
+              snapshot: this.#knowledgeRegistry.snapshot.ref,
+            },
     };
   }
 
@@ -412,14 +471,62 @@ export class PipelineOrchestrator {
     profileId = this.#defaultProfileId,
   ): Promise<ImageToVideoPlan> {
     const profile = this.#profiles.getRequired(profileId);
-    const candidate = this.#planCompiler.compile(value, profile);
+    let input;
+    try {
+      input = parseCreatePlanInput(value);
+    } catch (cause) {
+      throw new PipelineOperationError(
+        "invalid_request",
+        "Plan input failed contract validation",
+        { cause },
+      );
+    }
+    let knowledgeBinding: KnowledgeBinding | undefined;
+    if (input.knowledge !== undefined) {
+      if (this.#knowledgeRegistry === undefined) {
+        throw new PipelineOperationError(
+          "workflow_incompatible",
+          "Product knowledge is not configured for this Harness instance",
+        );
+      }
+      try {
+        knowledgeBinding = this.#knowledgeRegistry.compileSelection(
+          input.knowledge,
+        );
+        this.#knowledgeRegistry.validateGroundedContent(knowledgeBinding, {
+          brief: input.brief,
+          ...(input.stillPrompt === undefined
+            ? {}
+            : { stillPrompt: input.stillPrompt }),
+          ...(input.motionPrompt === undefined
+            ? {}
+            : { motionPrompt: input.motionPrompt }),
+          ...(input.negativePrompt === undefined
+            ? {}
+            : { negativePrompt: input.negativePrompt }),
+        });
+      } catch (cause) {
+        throw new PipelineOperationError(
+          "workflow_incompatible",
+          "The selected product facts or grounded content do not match the pinned policy",
+          { cause },
+        );
+      }
+    } else if (this.#knowledgeRegistry?.requiresGrounding(input) === true) {
+      throw new PipelineOperationError(
+        "workflow_incompatible",
+        "Protected product content requires an approved knowledge selection",
+      );
+    }
+    const candidate = this.#planCompiler.compile(input, profile, {
+      ...(knowledgeBinding === undefined ? {} : { knowledgeBinding }),
+    });
     if (candidate.imageStage.referenceArtifactIds.length > 0) {
       throw new PipelineOperationError(
         "missing_asset",
         "Reference asset ingestion is not implemented in the offline Phase A service",
       );
     }
-    const input = value as { idempotencyKey?: unknown };
     const idempotencyKey =
       typeof input.idempotencyKey === "string" && input.idempotencyKey !== ""
         ? input.idempotencyKey
@@ -441,7 +548,8 @@ export class PipelineOrchestrator {
     const request: Record<string, unknown> = {
       profileId: profile.profile.profileId,
       profileHash: profile.profileHash,
-      ...(value as Record<string, unknown>),
+      ...input,
+      ...(knowledgeBinding === undefined ? {} : { knowledgeBinding }),
     };
     delete request.idempotencyKey;
     return this.#store.transaction(() => {
@@ -1091,6 +1199,10 @@ export class PipelineOrchestrator {
         );
         return;
       case "final_acceptance":
+        await this.#verifyPersistedKnowledgeValidation(
+          payload.pipelineId,
+          this.#planForPipeline(payload.pipelineId),
+        );
         if (gate.candidateArtifactIds.length !== 1) {
           throw new PipelineOperationError(
             "missing_asset",
@@ -1457,6 +1569,7 @@ export class PipelineOrchestrator {
       return;
     }
     const plan = this.#planForPipeline(pipelineId);
+    await this.#runKnowledgeValidationStage(pipelineId, plan);
     const semanticHash = semanticRequest(pipelineId, "image_preview", {
       approvedPlanHash: plan.planHash,
       promptHash: plan.stillPrompt.sha256,
@@ -1511,6 +1624,183 @@ export class PipelineOrchestrator {
       "image_selection",
       candidates.map((item) => item.artifactId),
     );
+  }
+
+  #validateKnowledgePlan(plan: ImageToVideoPlan): KnowledgeBinding {
+    const binding = plan.knowledgeBinding;
+    if (binding === undefined) {
+      throw new PipelineOperationError(
+        "workflow_incompatible",
+        "The approved Plan has no product knowledge binding",
+      );
+    }
+    if (this.#knowledgeRegistry === undefined) {
+      throw new PipelineOperationError(
+        "workflow_incompatible",
+        "The approved Plan requires product knowledge that is not configured",
+      );
+    }
+    try {
+      return this.#knowledgeRegistry.validateGroundedContent(binding, {
+        brief: plan.originalBrief,
+        stillPrompt: plan.stillPrompt.text,
+        motionPrompt: plan.motionPrompt.text,
+        negativePrompt: plan.negativePrompt.text,
+      });
+    } catch (cause) {
+      throw new PipelineOperationError(
+        "workflow_incompatible",
+        "The approved Plan content no longer matches the pinned product knowledge policy",
+        { cause },
+      );
+    }
+  }
+
+  #knowledgeValidationReport(
+    plan: ImageToVideoPlan,
+    binding: KnowledgeBinding,
+  ): Record<string, unknown> {
+    return {
+      schemaVersion: 1,
+      scope: "pinned-product-knowledge",
+      status: "passed",
+      approvedPlanHash: plan.planHash,
+      snapshot: binding.snapshot,
+      bindingHash: binding.bindingHash,
+      answers: binding.answers,
+      claims: binding.claims,
+    };
+  }
+
+  #knowledgeValidationSemanticHash(
+    pipelineId: string,
+    plan: ImageToVideoPlan,
+    binding: KnowledgeBinding,
+  ): string {
+    return semanticRequest(pipelineId, "knowledge_validate", {
+      approvedPlanHash: plan.planHash,
+      bindingHash: binding.bindingHash,
+      snapshot: binding.snapshot,
+    });
+  }
+
+  async #verifyPersistedKnowledgeValidation(
+    pipelineId: string,
+    plan: ImageToVideoPlan,
+  ): Promise<ArtifactDescriptor | undefined> {
+    const binding = plan.knowledgeBinding;
+    if (binding === undefined) return undefined;
+    const semanticHash = this.#knowledgeValidationSemanticHash(
+      pipelineId,
+      plan,
+      binding,
+    );
+    const stage = this.#store.stages.findByLogicalKey(
+      pipelineId,
+      "knowledge_validate",
+      semanticHash,
+    );
+    if (stage === undefined) {
+      throw new PipelineOperationError(
+        "workflow_incompatible",
+        "The approved Plan has no completed product knowledge validation",
+      );
+    }
+    if (stage.status !== "completed") {
+      const failure = new PipelineOperationError(
+        "workflow_incompatible",
+        "The approved Plan product knowledge validation is not current",
+      );
+      this.#recordLocalStageFailure(stage.stageId, undefined, failure);
+      throw failure;
+    }
+    return await this.#guardLocalStage(stage, undefined, async () => {
+      const reports = this.#store.artifacts
+        .listForPipeline(pipelineId)
+        .filter(
+          (artifact) =>
+            artifact.stageId === stage.stageId &&
+            artifact.kind === "qa_report" &&
+            !this.#store.artifacts.isSuperseded(artifact.artifactId),
+        );
+      if (reports.length === 0) {
+        throw new PipelineOperationError(
+          "missing_asset",
+          "The persisted product knowledge report is missing",
+        );
+      }
+      if (reports.length !== 1) {
+        throw new PipelineOperationError(
+          "decode_failed",
+          "The persisted product knowledge validation has ambiguous reports",
+        );
+      }
+      const report = reports[0]!;
+      const validated = this.#validateKnowledgePlan(plan);
+      const expected = this.#knowledgeValidationReport(plan, validated);
+      const bytes = await this.#readVerifiedArtifact(report);
+      let actual: unknown;
+      try {
+        actual = JSON.parse(bytes.toString("utf8")) as unknown;
+      } catch (cause) {
+        throw new PipelineOperationError(
+          "decode_failed",
+          "The persisted product knowledge report is not valid JSON",
+          { cause, details: { artifactId: report.artifactId } },
+        );
+      }
+      if (canonicalJsonSha256(actual) !== canonicalJsonSha256(expected)) {
+        throw new PipelineOperationError(
+          "decode_failed",
+          "The persisted product knowledge report does not match the approved Plan",
+          { details: { artifactId: report.artifactId } },
+        );
+      }
+      return report;
+    });
+  }
+
+  async #runKnowledgeValidationStage(
+    pipelineId: string,
+    plan: ImageToVideoPlan,
+  ): Promise<ArtifactDescriptor | undefined> {
+    const binding = plan.knowledgeBinding;
+    if (binding === undefined) return undefined;
+    const semanticHash = this.#knowledgeValidationSemanticHash(
+      pipelineId,
+      plan,
+      binding,
+    );
+    const stage = this.#createStage(
+      pipelineId,
+      "knowledge_validate",
+      semanticHash,
+      [],
+    );
+    const currentStage = this.#store.stages.getRequired(stage.stageId);
+    if (currentStage.status === "completed") {
+      return await this.#verifyPersistedKnowledgeValidation(pipelineId, plan);
+    }
+    const run = this.#startLocalRun(stage, {
+      bindingHash: binding.bindingHash,
+      corpusHash: binding.snapshot.corpusHash,
+      policyHash: binding.snapshot.policyHash,
+    });
+    return await this.#guardLocalStage(stage, run, async () => {
+      const validated = this.#validateKnowledgePlan(plan);
+      const report = this.#knowledgeValidationReport(plan, validated);
+      const artifact = await this.#writeLocalArtifact(
+        stage,
+        run,
+        "qa_report",
+        "application/json",
+        Buffer.from(`${JSON.stringify(report, undefined, 2)}\n`, "utf8"),
+        [],
+        `reports/knowledge-validate-${run.runId}.json`,
+      );
+      this.#finishLocalRun(stage, run);
+      return artifact;
+    });
   }
 
   async #afterImageSelection(
@@ -1570,6 +1860,7 @@ export class PipelineOrchestrator {
       return;
     }
     const plan = this.#planForPipeline(pipelineId);
+    await this.#runKnowledgeValidationStage(pipelineId, plan);
     const seeds = Array.from(
       { length: plan.candidatePolicy.previewCandidateCount },
       (_, index) => this.#previewSeed(plan.planHash, rerollOrdinal, index),
@@ -1683,6 +1974,7 @@ export class PipelineOrchestrator {
       return;
     }
     const plan = this.#planForPipeline(pipelineId);
+    await this.#runKnowledgeValidationStage(pipelineId, plan);
     const semanticHash = semanticRequest(pipelineId, "video_final", {
       frameHash: inputFrame.sha256,
       selectedPreview: selectedPreview.artifactId,
@@ -2200,6 +2492,14 @@ export class PipelineOrchestrator {
         ),
       );
     }
+    try {
+      await this.#verifyPersistedKnowledgeValidation(
+        run.pipelineId,
+        this.#planForPipeline(run.pipelineId),
+      );
+    } catch (cause) {
+      throw this.#recordKnowledgeBlockedSubmission(message, cause);
+    }
 
     let result: BackendResult | undefined;
     if (message.result !== undefined) {
@@ -2645,6 +2945,64 @@ export class PipelineOrchestrator {
         : "Backend execution failed",
       { cause },
     );
+  }
+
+  #recordKnowledgeBlockedSubmission(
+    message: OutboxMessage<SubmissionEnvelope>,
+    cause: unknown,
+  ): PipelineOperationError {
+    const failure =
+      cause instanceof PipelineOperationError
+        ? cause
+        : new PipelineOperationError(
+            "workflow_incompatible",
+            "Product knowledge validation blocked backend submission",
+            { cause },
+          );
+    this.#store.transaction(() => {
+      let run = this.#store.runs.getRequired(message.payload.runId);
+      if (!STAGE_RUN_TERMINAL_STATUSES.has(run.status)) {
+        run = this.#store.runs.transition(run.runId, "failed");
+      }
+      const stage = this.#store.stages.getRequired(run.stageId);
+      this.#store.artifacts.markStageOutputsSuperseded(stage.stageId);
+      if (stage.status === "pending" || stage.status === "active") {
+        this.#store.stages.transition(stage.stageId, "failed", {
+          activeRunId: null,
+        });
+      }
+      const pipeline = this.#store.pipelines.getRequired(run.pipelineId);
+      if (
+        pipeline.status !== "needs_attention" &&
+        !PIPELINE_TERMINAL_STATUSES.has(pipeline.status)
+      ) {
+        this.#store.pipelines.transition(
+          pipeline.pipelineId,
+          "needs_attention",
+          pipeline.version,
+          { activeStageId: null },
+        );
+      }
+      const outbox = this.#store.outbox.get(message.outboxId);
+      if (outbox?.status === "claimed") {
+        this.#store.outbox.fail(
+          message.outboxId,
+          this.#workerId,
+          "knowledge_validation_failed",
+          { maxAttempts: 1 },
+        );
+      }
+      this.#event(
+        "stage.submission_blocked",
+        { errorCode: failure.code, reason: "knowledge_validation_failed" },
+        {
+          pipelineId: run.pipelineId,
+          stageId: run.stageId,
+          runId: run.runId,
+        },
+      );
+    });
+    return failure;
   }
 
   async #importFakeResult(

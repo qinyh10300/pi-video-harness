@@ -18,6 +18,7 @@ import type {
   RunContext,
 } from "@pi-video-harness/contracts";
 import { SqliteCoreStore } from "@pi-video-harness/core";
+import { ProductKnowledgeRegistry } from "@pi-video-harness/knowledge";
 import { LocalArtifactStore } from "@pi-video-harness/media";
 
 import { PipelineOrchestrator } from "./orchestrator.js";
@@ -26,6 +27,25 @@ import { ProfileRegistry } from "./profile-registry.js";
 const profileDirectory = fileURLToPath(
   new URL("../../../config/pipelines", import.meta.url),
 );
+const knowledgeSourceDirectory = fileURLToPath(
+  new URL("../../../knowledge/lynxon-product-knowledge", import.meta.url),
+);
+const knowledgeManifestPath = fileURLToPath(
+  new URL(
+    "../../../config/knowledge/lynxon-product-knowledge.v1.json",
+    import.meta.url,
+  ),
+);
+const groundedScenePrefix = "写实旅行场景，成年车主在安全停车区查看手机。";
+const faultReportingQuestion = "车辆发生故障后应该怎样报修？";
+const faultReportingAnswer =
+  "车辆发生故障后，应先联系Lynxon，并在车辆抵达合规维修机构后按指引报修；未经允许不要拆解维修。";
+const repairSitesQuestion = "车辆可以送到哪里维修？";
+const repairSitesAnswer =
+  "车辆可送至所属品牌4S店或国家认证的具备二类（含）以上维修资质的维修站。";
+
+const groundedBrief = (...approvedFragments: readonly string[]): string =>
+  [groundedScenePrefix, ...approvedFragments].join("\n");
 
 const stores: SqliteCoreStore[] = [];
 
@@ -38,6 +58,7 @@ const makeHarness = async (
   backends?: {
     image?: FakeImageBackend;
     video?: FakeVideoBackend;
+    knowledgeRegistry?: ProductKnowledgeRegistry;
     afterSubmissionIntentPersisted?: () => void | Promise<void>;
     afterGateContinuationPersisted?: () => void | Promise<void>;
     afterCancelContinuationPersisted?: () => void | Promise<void>;
@@ -75,6 +96,9 @@ const makeHarness = async (
     ...(backends?.video === undefined
       ? {}
       : { fakeVideoBackend: backends.video }),
+    ...(backends?.knowledgeRegistry === undefined
+      ? {}
+      : { knowledgeRegistry: backends.knowledgeRegistry }),
     ...(backends?.afterSubmissionIntentPersisted === undefined
       ? {}
       : {
@@ -145,6 +169,631 @@ const transformVideoArtifacts = (
 };
 
 describe("PipelineOrchestrator offline E2E", () => {
+  it("validates pinned product knowledge before the first model stage", async () => {
+    let imageStarts = 0;
+    const image = new FakeImageBackend({
+      faultInjector: ({ operation }) => {
+        if (operation === "start") imageStarts += 1;
+      },
+    });
+    const knowledgeRegistry = await ProductKnowledgeRegistry.load({
+      sourceDirectory: knowledgeSourceDirectory,
+      manifestPath: knowledgeManifestPath,
+    });
+    const { orchestrator } = await makeHarness("fake-image2-video-v1", {
+      image,
+      knowledgeRegistry,
+    });
+
+    await expect(
+      orchestrator.createPlan({
+        brief: "车援宝支持全国任意维修厂直接维修。",
+      }),
+    ).rejects.toMatchObject({ code: "workflow_incompatible" });
+    await expect(
+      orchestrator.createPlan({
+        brief:
+          "介绍车\u034f延\u034f保：它是保\u034f险，任何毛病都免\u034f费处理。",
+      }),
+    ).rejects.toMatchObject({ code: "workflow_incompatible" });
+
+    const plan = await orchestrator.createPlan({
+      brief: groundedBrief(
+        faultReportingQuestion,
+        faultReportingAnswer,
+        repairSitesQuestion,
+        repairSitesAnswer,
+      ),
+      knowledge: {
+        knowledgeBaseId: "lynxon-product-knowledge",
+        policyId: "lynxon-video-content-policy-v1",
+        qaIds: ["fault-reporting", "repair-sites"],
+        assertions: [
+          {
+            claimId: "contact-before-repair",
+            text: faultReportingAnswer,
+          },
+          {
+            claimId: "qualified-repair-sites",
+            text: repairSitesAnswer,
+          },
+        ],
+      },
+    });
+    let snapshot = await orchestrator.createPipeline({
+      planId: plan.planId,
+      expectedPlanHash: plan.planHash,
+      idempotencyKey: "grounded-pipeline",
+    });
+
+    expect(imageStarts).toBe(0);
+    expect(
+      snapshot.stages.some((stage) => stage.kind === "knowledge_validate"),
+    ).toBe(false);
+
+    const gate = openGate(snapshot);
+    snapshot = await orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "approve",
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "approve-grounded-plan",
+      },
+    );
+
+    const knowledgeStage = snapshot.stages.find(
+      (stage) => stage.kind === "knowledge_validate",
+    );
+    expect(knowledgeStage).toMatchObject({ status: "completed" });
+    const report = snapshot.artifacts.find(
+      (artifact) =>
+        artifact.stageId === knowledgeStage?.stageId &&
+        artifact.kind === "qa_report",
+    );
+    expect(report).toBeDefined();
+    const reportBody = JSON.parse(
+      (
+        await orchestrator.readArtifactContent(
+          snapshot.pipeline.pipelineId,
+          report!.artifactId,
+        )
+      ).toString("utf8"),
+    ) as Record<string, unknown>;
+    expect(reportBody).toMatchObject({
+      status: "passed",
+      bindingHash: plan.knowledgeBinding?.bindingHash,
+      snapshot: {
+        revision: "4be08769b2e3459075490c7ab31924178ab44cd8",
+      },
+    });
+    expect(imageStarts).toBe(1);
+    let selectionGate = openGate(snapshot);
+    expect(selectionGate.kind).toBe("image_selection");
+    snapshot = await orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      selectionGate.gateId,
+      {
+        action: "select",
+        selectedArtifactId: selectionGate.candidateArtifactIds[0]!,
+        expectedPipelineVersion: selectionGate.expectedPipelineVersion,
+        idempotencyKey: "select-grounded-image",
+      },
+    );
+    selectionGate = openGate(snapshot);
+    expect(selectionGate.kind).toBe("video_selection");
+    snapshot = await orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      selectionGate.gateId,
+      {
+        action: "select",
+        selectedArtifactId: selectionGate.candidateArtifactIds[0]!,
+        expectedPipelineVersion: selectionGate.expectedPipelineVersion,
+        idempotencyKey: "select-grounded-video",
+      },
+    );
+    expect(openGate(snapshot).kind).toBe("final_acceptance");
+    const manifest = snapshot.artifacts.find(
+      (artifact) => artifact.kind === "manifest",
+    );
+    expect(manifest).toBeDefined();
+    const manifestBody = JSON.parse(
+      (
+        await orchestrator.readArtifactContent(
+          snapshot.pipeline.pipelineId,
+          manifest!.artifactId,
+        )
+      ).toString("utf8"),
+    ) as {
+      plan: { knowledgeBinding?: { bindingHash: string } };
+      artifacts: Array<{ artifactId: string }>;
+    };
+    expect(manifestBody.plan.knowledgeBinding?.bindingHash).toBe(
+      plan.knowledgeBinding?.bindingHash,
+    );
+    expect(manifestBody.artifacts).toContainEqual({
+      artifactId: report!.artifactId,
+      kind: "qa_report",
+      sha256: report!.sha256,
+      sizeBytes: report!.sizeBytes,
+    });
+  });
+
+  it("rejects unsupported insurance and absolute repair promises despite a valid knowledge selection", async () => {
+    const knowledgeRegistry = await ProductKnowledgeRegistry.load({
+      sourceDirectory: knowledgeSourceDirectory,
+      manifestPath: knowledgeManifestPath,
+    });
+    const { orchestrator } = await makeHarness("fake-image2-video-v1", {
+      knowledgeRegistry,
+    });
+
+    await expect(
+      orchestrator.createPlan({
+        brief: groundedBrief(
+          faultReportingQuestion,
+          faultReportingAnswer,
+          "车援宝是保险，任何故障都百分百免费修。",
+        ),
+        knowledge: {
+          knowledgeBaseId: "lynxon-product-knowledge",
+          policyId: "lynxon-video-content-policy-v1",
+          qaIds: ["fault-reporting"],
+          assertions: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "workflow_incompatible" });
+
+    await expect(
+      orchestrator.createPlan({
+        brief: groundedBrief(
+          repairSitesQuestion,
+          `${repairSitesAnswer}这个说法完全是假的。`,
+        ),
+        knowledge: {
+          knowledgeBaseId: "lynxon-product-knowledge",
+          policyId: "lynxon-video-content-policy-v1",
+          qaIds: ["repair-sites"],
+          assertions: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "workflow_incompatible" });
+
+    await expect(
+      orchestrator.createPlan({
+        brief: groundedBrief(
+          faultReportingQuestion,
+          faultReportingAnswer,
+          "这个方案等车出毛病之后再加入也照样管。",
+        ),
+        knowledge: {
+          knowledgeBaseId: "lynxon-product-knowledge",
+          policyId: "lynxon-video-content-policy-v1",
+          qaIds: ["fault-reporting"],
+          assertions: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "workflow_incompatible" });
+  });
+
+  it("fails closed before model execution when an approved knowledge snapshot is unavailable", async () => {
+    let imageStarts = 0;
+    const image = new FakeImageBackend({
+      faultInjector: ({ operation }) => {
+        if (operation === "start") imageStarts += 1;
+      },
+    });
+    const knowledgeRegistry = await ProductKnowledgeRegistry.load({
+      sourceDirectory: knowledgeSourceDirectory,
+      manifestPath: knowledgeManifestPath,
+    });
+    const { store, profiles, artifactStore, orchestrator } = await makeHarness(
+      "fake-image2-video-v1",
+      { image, knowledgeRegistry },
+    );
+    const plan = await orchestrator.createPlan({
+      brief: groundedBrief(faultReportingQuestion, faultReportingAnswer),
+      knowledge: {
+        knowledgeBaseId: "lynxon-product-knowledge",
+        policyId: "lynxon-video-content-policy-v1",
+        qaIds: ["fault-reporting"],
+        assertions: [
+          {
+            claimId: "contact-before-repair",
+            text: faultReportingAnswer,
+          },
+        ],
+      },
+    });
+    const draft = await orchestrator.createPipeline({
+      planId: plan.planId,
+      expectedPlanHash: plan.planHash,
+      idempotencyKey: "missing-knowledge-pipeline",
+    });
+    const gate = openGate(draft);
+    let ordinal = 0;
+    const restarted = new PipelineOrchestrator({
+      store,
+      profiles,
+      artifactStore,
+      fakeImageBackend: image,
+      idFactory: () => `restart-${++ordinal}`,
+    });
+
+    await expect(
+      restarted.decideGate(draft.pipeline.pipelineId, gate.gateId, {
+        action: "approve",
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "approve-without-knowledge",
+      }),
+    ).rejects.toMatchObject({ code: "workflow_incompatible" });
+
+    const failed = restarted.getPipeline(draft.pipeline.pipelineId);
+    expect(failed.pipeline.status).toBe("needs_attention");
+    expect(
+      failed.stages.find((stage) => stage.kind === "knowledge_validate"),
+    ).toMatchObject({ status: "failed" });
+    expect(imageStarts).toBe(0);
+  });
+
+  it("revalidates the pinned binding before later video model stages", async () => {
+    let videoStarts = 0;
+    const video = new FakeVideoBackend({
+      faultInjector: ({ operation }) => {
+        if (operation === "start") videoStarts += 1;
+      },
+    });
+    const knowledgeRegistry = await ProductKnowledgeRegistry.load({
+      sourceDirectory: knowledgeSourceDirectory,
+      manifestPath: knowledgeManifestPath,
+    });
+    const { store, profiles, artifactStore, orchestrator } = await makeHarness(
+      "fake-image2-video-v1",
+      { video, knowledgeRegistry },
+    );
+    const plan = await orchestrator.createPlan({
+      brief: groundedBrief(repairSitesQuestion, repairSitesAnswer),
+      knowledge: {
+        knowledgeBaseId: "lynxon-product-knowledge",
+        policyId: "lynxon-video-content-policy-v1",
+        qaIds: ["repair-sites"],
+        assertions: [
+          {
+            claimId: "qualified-repair-sites",
+            text: repairSitesAnswer,
+          },
+        ],
+      },
+    });
+    let snapshot = await orchestrator.createPipeline({
+      planId: plan.planId,
+      expectedPlanHash: plan.planHash,
+      idempotencyKey: "later-stage-knowledge-pipeline",
+    });
+    let gate = openGate(snapshot);
+    snapshot = await orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "approve",
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "approve-later-stage-plan",
+      },
+    );
+    gate = openGate(snapshot);
+    expect(gate.kind).toBe("image_selection");
+
+    let ordinal = 0;
+    const restarted = new PipelineOrchestrator({
+      store,
+      profiles,
+      artifactStore,
+      fakeVideoBackend: video,
+      idFactory: () => `video-restart-${++ordinal}`,
+    });
+    await expect(
+      restarted.decideGate(snapshot.pipeline.pipelineId, gate.gateId, {
+        action: "select",
+        selectedArtifactId: gate.candidateArtifactIds[0]!,
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "select-image-without-knowledge",
+      }),
+    ).rejects.toMatchObject({ code: "workflow_incompatible" });
+
+    expect(
+      restarted.getPipeline(snapshot.pipeline.pipelineId).pipeline.status,
+    ).toBe("needs_attention");
+    expect(videoStarts).toBe(0);
+  });
+
+  it("blocks a recovered image submission before provider start when its knowledge report is missing", async () => {
+    let imageStarts = 0;
+    const image = new FakeImageBackend({
+      faultInjector: ({ operation }) => {
+        if (operation === "start") imageStarts += 1;
+      },
+    });
+    const knowledgeRegistry = await ProductKnowledgeRegistry.load({
+      sourceDirectory: knowledgeSourceDirectory,
+      manifestPath: knowledgeManifestPath,
+    });
+    let crash = true;
+    const harness = await makeHarness("fake-image2-video-v1", {
+      image,
+      knowledgeRegistry,
+      afterSubmissionIntentPersisted: () => {
+        if (!crash) return;
+        crash = false;
+        throw new Error("crash after grounded image intent");
+      },
+    });
+    const plan = await harness.orchestrator.createPlan({
+      brief: groundedBrief(faultReportingQuestion, faultReportingAnswer),
+      knowledge: {
+        knowledgeBaseId: "lynxon-product-knowledge",
+        policyId: "lynxon-video-content-policy-v1",
+        qaIds: ["fault-reporting"],
+        assertions: [],
+      },
+    });
+    let snapshot = await harness.orchestrator.createPipeline({
+      planId: plan.planId,
+      expectedPlanHash: plan.planHash,
+      idempotencyKey: "grounded-image-recovery-pipeline",
+    });
+    const gate = openGate(snapshot);
+    await expect(
+      harness.orchestrator.decideGate(
+        snapshot.pipeline.pipelineId,
+        gate.gateId,
+        {
+          action: "approve",
+          expectedPipelineVersion: gate.expectedPipelineVersion,
+          idempotencyKey: "grounded-image-recovery-approval",
+        },
+      ),
+    ).rejects.toThrow("crash after grounded image intent");
+    expect(imageStarts).toBe(0);
+
+    snapshot = harness.orchestrator.getPipeline(snapshot.pipeline.pipelineId);
+    const report = snapshot.artifacts.find(
+      (artifact) =>
+        artifact.kind === "qa_report" &&
+        snapshot.stages.find((stage) => stage.stageId === artifact.stageId)
+          ?.kind === "knowledge_validate",
+    )!;
+    const continuation = harness.store.outbox.getByDeduplicationKey(
+      `gate-continuation:${gate.gateId}`,
+    )!;
+    expect(continuation.status).toBe("claimed");
+    harness.store.outbox.complete(
+      continuation.outboxId,
+      continuation.leaseOwner!,
+      { simulatedParentSettlement: true },
+    );
+    await unlink(await harness.artifactStore.pathFor(report.storagePath));
+
+    const restarted = new PipelineOrchestrator({
+      store: harness.store,
+      profiles: harness.profiles,
+      artifactStore: harness.artifactStore,
+      knowledgeRegistry,
+      fakeImageBackend: image,
+      fakeVideoBackend: new FakeVideoBackend(),
+      workerId: "grounded-image-recovery-worker",
+    });
+    expect(await restarted.recover()).toEqual({ processed: 1, pending: 0 });
+    snapshot = restarted.getPipeline(snapshot.pipeline.pipelineId);
+    const imageStage = snapshot.stages.find(
+      (stage) => stage.kind === "image_preview",
+    );
+    expect(imageStarts).toBe(0);
+    expect(snapshot.pipeline.status).toBe("needs_attention");
+    expect(imageStage?.status).toBe("failed");
+    expect(
+      snapshot.runs.find((run) => run.stageId === imageStage?.stageId)?.status,
+    ).toBe("failed");
+    expect(harness.store.outbox.listUnfinished()).toHaveLength(0);
+  });
+
+  it("blocks a recovered final-video submission before provider start when its knowledge report is missing", async () => {
+    let videoStarts = 0;
+    const video = new FakeVideoBackend({
+      faultInjector: ({ operation }) => {
+        if (operation === "start") videoStarts += 1;
+      },
+    });
+    const knowledgeRegistry = await ProductKnowledgeRegistry.load({
+      sourceDirectory: knowledgeSourceDirectory,
+      manifestPath: knowledgeManifestPath,
+    });
+    let crashNextSubmission = false;
+    const harness = await makeHarness("fake-image2-video-v1", {
+      video,
+      knowledgeRegistry,
+      afterSubmissionIntentPersisted: () => {
+        if (!crashNextSubmission) return;
+        crashNextSubmission = false;
+        throw new Error("crash after grounded final-video intent");
+      },
+    });
+    const plan = await harness.orchestrator.createPlan({
+      brief: groundedBrief(repairSitesQuestion, repairSitesAnswer),
+      knowledge: {
+        knowledgeBaseId: "lynxon-product-knowledge",
+        policyId: "lynxon-video-content-policy-v1",
+        qaIds: ["repair-sites"],
+        assertions: [],
+      },
+    });
+    let snapshot = await harness.orchestrator.createPipeline({
+      planId: plan.planId,
+      expectedPlanHash: plan.planHash,
+      idempotencyKey: "grounded-final-recovery-pipeline",
+    });
+    let gate = openGate(snapshot);
+    snapshot = await harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "approve",
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "grounded-final-recovery-approval",
+      },
+    );
+    gate = openGate(snapshot);
+    snapshot = await harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "select",
+        selectedArtifactId: gate.candidateArtifactIds[0]!,
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "grounded-final-recovery-image",
+      },
+    );
+    gate = openGate(snapshot);
+    expect(gate.kind).toBe("video_selection");
+    const startsBeforeFinal = videoStarts;
+    crashNextSubmission = true;
+    await expect(
+      harness.orchestrator.decideGate(
+        snapshot.pipeline.pipelineId,
+        gate.gateId,
+        {
+          action: "select",
+          selectedArtifactId: gate.candidateArtifactIds[0]!,
+          expectedPipelineVersion: gate.expectedPipelineVersion,
+          idempotencyKey: "grounded-final-recovery-video",
+        },
+      ),
+    ).rejects.toThrow("crash after grounded final-video intent");
+    expect(videoStarts).toBe(startsBeforeFinal);
+
+    snapshot = harness.orchestrator.getPipeline(snapshot.pipeline.pipelineId);
+    const report = snapshot.artifacts.find(
+      (artifact) =>
+        artifact.kind === "qa_report" &&
+        snapshot.stages.find((stage) => stage.stageId === artifact.stageId)
+          ?.kind === "knowledge_validate",
+    )!;
+    const continuation = harness.store.outbox.getByDeduplicationKey(
+      `gate-continuation:${gate.gateId}`,
+    )!;
+    expect(continuation.status).toBe("claimed");
+    harness.store.outbox.complete(
+      continuation.outboxId,
+      continuation.leaseOwner!,
+      { simulatedParentSettlement: true },
+    );
+    await unlink(await harness.artifactStore.pathFor(report.storagePath));
+
+    const restarted = new PipelineOrchestrator({
+      store: harness.store,
+      profiles: harness.profiles,
+      artifactStore: harness.artifactStore,
+      knowledgeRegistry,
+      fakeImageBackend: new FakeImageBackend(),
+      fakeVideoBackend: video,
+      workerId: "grounded-final-recovery-worker",
+    });
+    expect(await restarted.recover()).toEqual({ processed: 1, pending: 0 });
+    snapshot = restarted.getPipeline(snapshot.pipeline.pipelineId);
+    const finalStage = snapshot.stages.find(
+      (stage) => stage.kind === "video_final",
+    );
+    expect(videoStarts).toBe(startsBeforeFinal);
+    expect(snapshot.pipeline.status).toBe("needs_attention");
+    expect(finalStage?.status).toBe("failed");
+    expect(
+      snapshot.runs.find((run) => run.stageId === finalStage?.stageId)?.status,
+    ).toBe("failed");
+    expect(harness.store.outbox.listUnfinished()).toHaveLength(0);
+  });
+
+  it("revalidates the knowledge binding and report before final acceptance", async () => {
+    const knowledgeRegistry = await ProductKnowledgeRegistry.load({
+      sourceDirectory: knowledgeSourceDirectory,
+      manifestPath: knowledgeManifestPath,
+    });
+    const harness = await makeHarness("fake-image2-video-v1", {
+      knowledgeRegistry,
+    });
+    const plan = await harness.orchestrator.createPlan({
+      brief: groundedBrief(faultReportingQuestion, faultReportingAnswer),
+      knowledge: {
+        knowledgeBaseId: "lynxon-product-knowledge",
+        policyId: "lynxon-video-content-policy-v1",
+        qaIds: ["fault-reporting"],
+        assertions: [],
+      },
+    });
+    let snapshot = await harness.orchestrator.createPipeline({
+      planId: plan.planId,
+      expectedPlanHash: plan.planHash,
+      idempotencyKey: "grounded-final-acceptance-pipeline",
+    });
+    let gate = openGate(snapshot);
+    snapshot = await harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "approve",
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "grounded-final-acceptance-plan",
+      },
+    );
+    gate = openGate(snapshot);
+    snapshot = await harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "select",
+        selectedArtifactId: gate.candidateArtifactIds[0]!,
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "grounded-final-acceptance-image",
+      },
+    );
+    gate = openGate(snapshot);
+    snapshot = await harness.orchestrator.decideGate(
+      snapshot.pipeline.pipelineId,
+      gate.gateId,
+      {
+        action: "select",
+        selectedArtifactId: gate.candidateArtifactIds[0]!,
+        expectedPipelineVersion: gate.expectedPipelineVersion,
+        idempotencyKey: "grounded-final-acceptance-video",
+      },
+    );
+    gate = openGate(snapshot);
+    expect(gate.kind).toBe("final_acceptance");
+    const report = snapshot.artifacts.find(
+      (artifact) =>
+        artifact.kind === "qa_report" &&
+        snapshot.stages.find((stage) => stage.stageId === artifact.stageId)
+          ?.kind === "knowledge_validate",
+    )!;
+    await unlink(await harness.artifactStore.pathFor(report.storagePath));
+
+    await expect(
+      harness.orchestrator.decideGate(
+        snapshot.pipeline.pipelineId,
+        gate.gateId,
+        {
+          action: "approve",
+          expectedPipelineVersion: gate.expectedPipelineVersion,
+          idempotencyKey: "grounded-final-acceptance-decision",
+        },
+      ),
+    ).rejects.toMatchObject({ code: "missing_asset" });
+
+    snapshot = harness.orchestrator.getPipeline(snapshot.pipeline.pipelineId);
+    expect(snapshot.pipeline.status).toBe("needs_attention");
+    expect(snapshot.pipeline.status).not.toBe("completed");
+    expect(harness.store.artifacts.isSuperseded(report.artifactId)).toBe(true);
+    expect(harness.store.outbox.listUnfinished()).toHaveLength(0);
+  });
+
   it("completes all approval gates with no network or provider calls", async () => {
     let imageStarts = 0;
     let videoStarts = 0;

@@ -27,6 +27,15 @@ const branchForAction = (
 describe("Pi-compatible tool schemas", () => {
   const tools = createVideoHarnessTools({} as VideoHarnessClient);
 
+  it("exposes the three video tools plus deterministic product Q&A", () => {
+    expect(tools.map(({ name }) => name)).toEqual([
+      "video_generate",
+      "video_job",
+      "product_knowledge_qa",
+      "video_capabilities",
+    ]);
+  });
+
   it("expresses video_generate brief xor planId with closed branches", () => {
     const schema = tools.find(
       ({ name }) => name === "video_generate",
@@ -51,6 +60,15 @@ describe("Pi-compatible tool schemas", () => {
     expect(
       (branches[1]?.properties as Record<string, unknown>).brief,
     ).toBeUndefined();
+    expect(branches[0]).toMatchObject({
+      properties: {
+        knowledge: {
+          type: "object",
+          additionalProperties: false,
+          required: ["knowledgeBaseId", "policyId", "qaIds", "assertions"],
+        },
+      },
+    });
   });
 
   it("declares a closed, complete branch for every video_job action", () => {
@@ -162,5 +180,39 @@ describe("Pi-compatible tool schemas", () => {
       limit: 20,
       waitMs: 25_000,
     });
+  });
+
+  it("declares and executes a closed deterministic knowledge-Q&A tool", async () => {
+    const client = {
+      queryKnowledge: vi.fn(async () => ({
+        status: "insufficient_evidence",
+        reason: "no_approved_answer",
+      })),
+    } as unknown as VideoHarnessClient;
+    const tool = createVideoHarnessTools(client).find(
+      ({ name }) => name === "product_knowledge_qa",
+    );
+    expect(tool?.inputSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["knowledgeBaseId", "policyId", "question"],
+      properties: {
+        knowledgeBaseId: { type: "string", minLength: 1, maxLength: 256 },
+        policyId: { type: "string", minLength: 1, maxLength: 256 },
+        question: { type: "string", minLength: 1, maxLength: 2_000 },
+      },
+    });
+    const input = {
+      knowledgeBaseId: "lynxon-product-knowledge",
+      policyId: "lynxon-video-content-policy-v1",
+      question: "车辆发生故障后应该怎样报修？",
+    };
+
+    await tool?.execute(input);
+
+    expect(client.queryKnowledge).toHaveBeenCalledExactlyOnceWith(
+      input,
+      undefined,
+    );
   });
 });

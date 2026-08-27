@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mkdir } from "node:fs/promises";
+import { promisify } from "node:util";
 
 import type { FastifyInstance } from "fastify";
 
@@ -11,6 +13,10 @@ import {
 } from "@pi-video-harness/backend-fake";
 import { DisabledOpenAIImageDriver } from "@pi-video-harness/backend-openai-image";
 import { SqliteCoreStore } from "@pi-video-harness/core";
+import {
+  LYNXON_KNOWLEDGE_REVISION,
+  ProductKnowledgeRegistry,
+} from "@pi-video-harness/knowledge";
 import { LocalArtifactStore } from "@pi-video-harness/media";
 import {
   PipelineOrchestrator,
@@ -41,6 +47,45 @@ export class DependencyCompositionError extends Error {
     this.name = "DependencyCompositionError";
   }
 }
+
+const execFileAsync = promisify(execFile);
+
+const assertPinnedKnowledgeRevision = async (
+  sourceDirectory: string,
+): Promise<void> => {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      "git",
+      ["-C", sourceDirectory, "rev-parse", "--verify", "HEAD^{commit}"],
+      {
+        encoding: "utf8",
+        timeout: 5_000,
+        maxBuffer: 1_024,
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_OPTIONAL_LOCKS: "0",
+        },
+      },
+    ));
+  } catch (cause) {
+    throw new DependencyCompositionError(
+      "Pinned product knowledge submodule is unavailable or not initialized",
+      { cause },
+    );
+  }
+  const revision = stdout.trim();
+  if (
+    !/^[a-f0-9]{40}$/u.test(revision) ||
+    revision !== LYNXON_KNOWLEDGE_REVISION
+  ) {
+    throw new DependencyCompositionError(
+      "Pinned product knowledge submodule revision does not match the reviewed manifest",
+    );
+  }
+};
 
 const safeListenError = (error: unknown, config: ServiceConfig): unknown => {
   const code =
@@ -78,6 +123,19 @@ export const createAppDependencies: AppDependenciesFactory = async (config) => {
     allowedProfileIds: config.profileIds,
     productionMode: false,
   });
+  const knowledgeSourceDirectory = fileURLToPath(
+    new URL("../../../knowledge/lynxon-product-knowledge/", import.meta.url),
+  );
+  await assertPinnedKnowledgeRevision(knowledgeSourceDirectory);
+  const knowledgeRegistry = await ProductKnowledgeRegistry.load({
+    sourceDirectory: knowledgeSourceDirectory,
+    manifestPath: fileURLToPath(
+      new URL(
+        "../../../config/knowledge/lynxon-product-knowledge.v1.json",
+        import.meta.url,
+      ),
+    ),
+  });
   const store = new SqliteCoreStore(
     resolve(config.dataDir, "videoharness.sqlite"),
   );
@@ -86,6 +144,7 @@ export const createAppDependencies: AppDependenciesFactory = async (config) => {
       store,
       artifactStore: new LocalArtifactStore({ rootDirectory: config.dataDir }),
       profiles,
+      knowledgeRegistry,
       defaultProfileId: config.defaultProfileId,
       fakeImageBackend: new FakeImageBackend(),
       fakeVideoBackend: new FakeVideoBackend(),

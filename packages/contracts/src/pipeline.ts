@@ -16,6 +16,7 @@ import {
 
 export const STAGE_KINDS = [
   "plan_compile",
+  "knowledge_validate",
   "image_preview",
   "image_validate",
   "image_final",

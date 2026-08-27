@@ -14,6 +14,7 @@
       "@pi-video-harness/contracts": ["packages/contracts/src/index.ts"],
       "@pi-video-harness/core": ["packages/core/src/index.ts"],
       "@pi-video-harness/media": ["packages/media/src/index.ts"],
+      "@pi-video-harness/knowledge": ["packages/knowledge/src/index.ts"],
       "@pi-video-harness/pipeline": ["packages/pipeline/src/index.ts"]
     }
   },

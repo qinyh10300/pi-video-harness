@@ -1,0 +1,127 @@
+{
+  "schemaVersion": "1",
+  "knowledgeBaseId": "lynxon-product-knowledge",
+  "source": {
+    "repositoryUrl": "https://github.com/Futura-IO/web-Lynxon-product-knowledge.git",
+    "revision": "4be08769b2e3459075490c7ab31924178ab44cd8",
+    "authoritativeRoot": "01-PRODUCT",
+    "expectedCorpusHash": "87f0f29cc9dd521974c7135e6688012e0a5ac957522fbec9ed164d546576e3b6",
+    "maxSourceFileBytes": 262144,
+    "maxCorpusFiles": 512,
+    "maxCorpusBytes": 16777216
+  },
+  "policy": {
+    "policyId": "lynxon-video-content-policy-v1",
+    "protectedTerms": [
+      "车援宝",
+      "车元宝",
+      "车延保",
+      "车辆延保",
+      "机动车延保",
+      "汽车延保",
+      "第三方延保",
+      "延长保修",
+      "延长保险",
+      "汽车延长保险",
+      "车辆故障保障",
+      "故障保障",
+      "Lynxon",
+      "力众",
+      "力众华援"
+    ],
+    "citations": [
+      {
+        "citationId": "waiting-period-source",
+        "path": "01-PRODUCT/_通用条款/等待期.md",
+        "anchor": "^waiting-period-def",
+        "evidenceExcerpt": "本项目设置 30日等待期，等待期内发生的故障不予赔偿"
+      },
+      {
+        "citationId": "existing-fault-source",
+        "path": "01-PRODUCT/_通用条款/通用费用排除.md",
+        "anchor": "^cost-8",
+        "evidenceExcerpt": "本合同签署时，车辆已经存在的故障所引起的维修费用；"
+      },
+      {
+        "citationId": "claim-process-source",
+        "path": "01-PRODUCT/_通用条款/索赔流程.md",
+        "anchor": "^step-1-report",
+        "evidenceExcerpt": "立即拨打 **Lynxon 服务热线 400-622-8769**。可自行将车辆送至：\n- 车辆所属品牌 4S 店；或\n- 国家认证的具备**二类（含）以上**维修资质的维修站\n\n> [!warning] 关键限制\n> 车辆抵达维修机构后，**必须及时联系 Lynxon 并按指引报修**。\n> **未经 Lynxon 允许不能拆解维修，否则导致损失由车主承担。**"
+      },
+      {
+        "citationId": "repair-site-source",
+        "path": "01-PRODUCT/_通用条款/索赔流程.md",
+        "anchor": "^step-1-report",
+        "evidenceExcerpt": "国家认证的具备**二类（含）以上**维修资质的维修站"
+      }
+    ],
+    "claims": [
+      {
+        "claimId": "waiting-period-30-days",
+        "approvedText": "延长保修服务设有30日等待期，等待期内发生的故障不予赔偿。",
+        "citationIds": ["waiting-period-source"]
+      },
+      {
+        "claimId": "existing-fault-not-covered",
+        "approvedText": "合同签署时车辆已经存在的故障所引起的维修费用不予承担。",
+        "citationIds": ["existing-fault-source"]
+      },
+      {
+        "claimId": "contact-before-repair",
+        "approvedText": "车辆发生故障后，应先联系Lynxon，并在车辆抵达合规维修机构后按指引报修；未经允许不要拆解维修。",
+        "citationIds": ["claim-process-source"]
+      },
+      {
+        "claimId": "qualified-repair-sites",
+        "approvedText": "车辆可送至所属品牌4S店或国家认证的具备二类（含）以上维修资质的维修站。",
+        "citationIds": ["repair-site-source"]
+      }
+    ],
+    "answers": [
+      {
+        "qaId": "waiting-period",
+        "canonicalQuestion": "延长保修服务的等待期是多久？",
+        "canonicalAnswer": "延长保修服务设有30日等待期，等待期内发生的故障不予赔偿。",
+        "citationIds": ["waiting-period-source"],
+        "matchAnyAllTerms": [
+          ["等待期", "多久"],
+          ["30日", "等待期"],
+          ["等待期", "赔"]
+        ]
+      },
+      {
+        "qaId": "existing-fault",
+        "canonicalQuestion": "签约时车辆已有故障，维修费用承担吗？",
+        "canonicalAnswer": "合同签署时车辆已经存在的故障所引起的维修费用不予承担。",
+        "citationIds": ["existing-fault-source"],
+        "matchAnyAllTerms": [
+          ["签约", "故障", "赔"],
+          ["签署", "已有故障"],
+          ["买之前", "车", "坏", "赔"]
+        ]
+      },
+      {
+        "qaId": "fault-reporting",
+        "canonicalQuestion": "车辆发生故障后应该怎样报修？",
+        "canonicalAnswer": "车辆发生故障后，应先联系Lynxon，并在车辆抵达合规维修机构后按指引报修；未经允许不要拆解维修。",
+        "citationIds": ["claim-process-source"],
+        "matchAnyAllTerms": [
+          ["故障", "报修"],
+          ["车坏", "怎么"],
+          ["故障", "先", "联系"]
+        ]
+      },
+      {
+        "qaId": "repair-sites",
+        "canonicalQuestion": "车辆可以送到哪里维修？",
+        "canonicalAnswer": "车辆可送至所属品牌4S店或国家认证的具备二类（含）以上维修资质的维修站。",
+        "citationIds": ["repair-site-source"],
+        "matchAnyAllTerms": [
+          ["哪里", "维修"],
+          ["4s店", "维修"],
+          ["维修站", "资质"]
+        ]
+      }
+    ]
+  }
+}

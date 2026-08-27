@@ -20,6 +20,7 @@ import {
   parseEventsQuery,
   parseGateDecisionRequest,
   parseGateParams,
+  parseKnowledgeQueryRequest,
   parseNoQuery,
   parsePipelineParams,
   parsePlanParams,
@@ -153,6 +154,14 @@ export const buildServer = (
     parseNoQuery(request.query);
     return reply.send(
       await service.capabilities(requestContext(request, reply)),
+    );
+  });
+
+  server.post("/v1/knowledge/queries", async (request, reply) => {
+    parseNoQuery(request.query);
+    const input = parseKnowledgeQueryRequest(request.body);
+    return reply.send(
+      await service.queryKnowledge(input, requestContext(request, reply)),
     );
   });
 

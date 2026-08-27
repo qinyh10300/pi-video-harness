@@ -16,6 +16,7 @@
     "@pi-video-harness/backend-openai-image": "workspace:*",
     "@pi-video-harness/contracts": "workspace:*",
     "@pi-video-harness/core": "workspace:*",
+    "@pi-video-harness/knowledge": "workspace:*",
     "@pi-video-harness/media": "workspace:*",
     "@pi-video-harness/pipeline": "workspace:*",
     "@sinclair/typebox": "0.34.52",

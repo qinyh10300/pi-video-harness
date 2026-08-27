@@ -1,25 +1,26 @@
 {
-  "name": "@pi-video-harness/pipeline",
+  "name": "@pi-video-harness/knowledge",
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Pinned, fail-closed product knowledge grounding for VideoHarness.",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --sourcemap --clean",
     "clean": "rm -rf dist",
-    "test": "vitest run --root ../.. packages/pipeline/src",
+    "test": "vitest run --root ../.. packages/knowledge/src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@pi-video-harness/backend-fake": "workspace:*",
-    "@pi-video-harness/contracts": "workspace:*",
-    "@pi-video-harness/core": "workspace:*",
-    "@pi-video-harness/knowledge": "workspace:*",
-    "@pi-video-harness/media": "workspace:*"
+    "@pi-video-harness/contracts": "workspace:*"
   }
 }

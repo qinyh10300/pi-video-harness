@@ -3,12 +3,14 @@ import {
   CreatePipelineRequestSchema,
   CreatePlanRequestSchema,
   GateDecisionInputSchema,
+  KnowledgeQueryInputSchema,
   RerollRequestSchema,
   parseContract,
   type CancelPipelineRequest,
   type CreatePipelineRequest,
   type CreatePlanRequest,
   type GateDecisionInput,
+  type KnowledgeQueryInput,
   type RerollRequest,
 } from "@pi-video-harness/contracts";
 import { Type } from "@sinclair/typebox";
@@ -132,6 +134,11 @@ export const parseEventsQuery = (value: unknown): PipelineEventsQuery => {
 
 export const parseCreatePlanRequest = (value: unknown): CreatePlanRequest =>
   parseContract(CreatePlanRequestSchema, value, "create plan request");
+
+export const parseKnowledgeQueryRequest = (
+  value: unknown,
+): KnowledgeQueryInput =>
+  parseContract(KnowledgeQueryInputSchema, value, "knowledge query request");
 
 export const parseCreatePipelineRequest = (
   value: unknown,

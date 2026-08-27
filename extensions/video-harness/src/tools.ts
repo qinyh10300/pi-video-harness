@@ -3,6 +3,7 @@ import type {
   CreatePipelineRequest,
   GateDecisionInput,
   GenerateImageToVideoInput,
+  KnowledgeQueryInput,
   RerollRequest,
 } from "@pi-video-harness/contracts";
 
@@ -75,6 +76,53 @@ export const createVideoHarnessTools = (
             },
             previewCandidateCount: { type: "integer", minimum: 1 },
             dryRun: { type: "boolean" },
+            knowledge: {
+              type: "object",
+              additionalProperties: false,
+              required: ["knowledgeBaseId", "policyId", "qaIds", "assertions"],
+              properties: {
+                knowledgeBaseId: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 256,
+                  pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                },
+                policyId: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 256,
+                  pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                },
+                qaIds: {
+                  type: "array",
+                  maxItems: 64,
+                  items: {
+                    type: "string",
+                    minLength: 1,
+                    maxLength: 256,
+                    pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                  },
+                },
+                assertions: {
+                  type: "array",
+                  maxItems: 64,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["claimId", "text"],
+                    properties: {
+                      claimId: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: 256,
+                        pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                      },
+                      text: { type: "string", minLength: 1 },
+                    },
+                  },
+                },
+              },
+            },
             idempotencyKey: { type: "string", minLength: 1 },
           },
         },
@@ -259,6 +307,34 @@ export const createVideoHarnessTools = (
           );
         }
       }
+    },
+  },
+  {
+    name: "product_knowledge_qa",
+    description:
+      "Answer a simple product question from the pinned, verified knowledge snapshot. Returns insufficient_evidence instead of inventing an answer.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["knowledgeBaseId", "policyId", "question"],
+      properties: {
+        knowledgeBaseId: {
+          type: "string",
+          minLength: 1,
+          maxLength: 256,
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        },
+        policyId: {
+          type: "string",
+          minLength: 1,
+          maxLength: 256,
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        },
+        question: { type: "string", minLength: 1, maxLength: 2_000 },
+      },
+    },
+    async execute(input: KnowledgeQueryInput, signal?: AbortSignal) {
+      return await client.queryKnowledge(input, signal);
     },
   },
   {

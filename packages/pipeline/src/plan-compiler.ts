@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import {
   parseCreatePlanInput,
+  parseKnowledgeBinding,
   type CreatePlanInput,
   type FrameSpec,
   type ImageToVideoPlan,
+  type KnowledgeBinding,
   type MotionPrompt,
   type NegativePrompt,
   type PipelineProfile,
@@ -40,6 +42,10 @@ export const WAN_PROJECT_NEGATIVE_PROMPT = [
 export interface PlanCompilerOptions {
   readonly now?: () => Date;
   readonly idFactory?: () => string;
+}
+
+export interface PlanCompilationContext {
+  readonly knowledgeBinding?: KnowledgeBinding;
 }
 
 export class PlanCompilationError extends Error {
@@ -292,6 +298,7 @@ export class PlanCompiler {
   compile(
     value: unknown,
     loadedProfile: LoadedPipelineProfile,
+    context: PlanCompilationContext = {},
   ): ImageToVideoPlan {
     let input: CreatePlanInput;
     try {
@@ -300,6 +307,48 @@ export class PlanCompiler {
       throw new PlanCompilationError("Plan input failed contract validation", {
         cause,
       });
+    }
+    let knowledgeBinding: KnowledgeBinding | undefined;
+    if (context.knowledgeBinding !== undefined) {
+      try {
+        knowledgeBinding = parseKnowledgeBinding(context.knowledgeBinding);
+      } catch (cause) {
+        throw new PlanCompilationError(
+          "Resolved knowledge binding failed contract validation",
+          { cause },
+        );
+      }
+      const { bindingHash, ...bindingPayload } = knowledgeBinding;
+      if (canonicalJsonSha256(bindingPayload) !== bindingHash) {
+        throw new PlanCompilationError(
+          "Resolved knowledge binding hash does not match its contents",
+        );
+      }
+    }
+    if ((input.knowledge === undefined) !== (knowledgeBinding === undefined)) {
+      throw new PlanCompilationError(
+        "Plan knowledge selection and resolved binding must be provided together",
+      );
+    }
+    if (input.knowledge !== undefined && knowledgeBinding !== undefined) {
+      const selectedAssertions = input.knowledge.assertions.map(
+        ({ claimId, text }) => ({ claimId, text }),
+      );
+      const boundAssertions = knowledgeBinding.claims.map(
+        ({ claimId, approvedText }) => ({ claimId, text: approvedText }),
+      );
+      if (
+        input.knowledge.knowledgeBaseId !==
+          knowledgeBinding.snapshot.knowledgeBaseId ||
+        input.knowledge.policyId !== knowledgeBinding.snapshot.policyId ||
+        JSON.stringify(input.knowledge.qaIds) !==
+          JSON.stringify(knowledgeBinding.answers.map(({ qaId }) => qaId)) ||
+        JSON.stringify(selectedAssertions) !== JSON.stringify(boundAssertions)
+      ) {
+        throw new PlanCompilationError(
+          "Resolved knowledge binding does not match the Plan selection",
+        );
+      }
     }
     const profile = loadedProfile.profile;
     const aspectRatio = input.aspectRatio ?? "16:9";
@@ -343,6 +392,7 @@ export class PlanCompiler {
           ? { estimatedOpenAICostUsd: 0, estimatedGpuSeconds: 0 }
           : {}),
       },
+      ...(knowledgeBinding === undefined ? {} : { knowledgeBinding }),
       createdAt: this.#now().toISOString(),
     };
     return {

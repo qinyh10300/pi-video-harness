@@ -7,6 +7,7 @@ import {
   parseContract,
 } from "./common.js";
 import { SupportedAspectRatioSchema } from "./frame.js";
+import { KnowledgeSelectionSchema } from "./knowledge.js";
 
 export const DurationSecondsSchema = Type.Literal(5, {
   $id: "DurationSeconds",
@@ -31,6 +32,7 @@ export const GenerateImageToVideoInputSchema = Type.Object(
     ),
     previewCandidateCount: Type.Optional(Type.Integer({ minimum: 1 })),
     dryRun: Type.Optional(Type.Boolean()),
+    knowledge: Type.Optional(KnowledgeSelectionSchema),
     idempotencyKey: Type.Optional(NonEmptyStringSchema),
   },
   { $id: "GenerateImageToVideoInput", additionalProperties: false },

@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import type { KnowledgeSelection } from "@pi-video-harness/contracts";
 import { sha256Hex } from "@pi-video-harness/core";
+import { ProductKnowledgeRegistry } from "@pi-video-harness/knowledge";
 
 import {
   PlanCompilationError,
@@ -20,6 +22,15 @@ import {
 
 const profileDirectory = fileURLToPath(
   new URL("../../../config/pipelines", import.meta.url),
+);
+const knowledgeSourceDirectory = fileURLToPath(
+  new URL("../../../knowledge/lynxon-product-knowledge", import.meta.url),
+);
+const knowledgeManifestPath = fileURLToPath(
+  new URL(
+    "../../../config/knowledge/lynxon-product-knowledge.v1.json",
+    import.meta.url,
+  ),
 );
 
 describe("ProfileRegistry", () => {
@@ -204,5 +215,60 @@ describe("PlanCompiler", () => {
         registry.getRequired("fake-image2-video-v1"),
       ),
     ).toThrowError(PlanCompilationError);
+  });
+
+  it("binds the pinned product knowledge snapshot into the Plan hash", async () => {
+    const profiles = await ProfileRegistry.load({
+      directory: profileDirectory,
+    });
+    const knowledge = await ProductKnowledgeRegistry.load({
+      sourceDirectory: knowledgeSourceDirectory,
+      manifestPath: knowledgeManifestPath,
+    });
+    const waitingSelection = {
+      knowledgeBaseId: "lynxon-product-knowledge",
+      policyId: "lynxon-video-content-policy-v1",
+      qaIds: ["waiting-period"],
+      assertions: [
+        {
+          claimId: "waiting-period-30-days",
+          text: "延长保修服务设有30日等待期，等待期内发生的故障不予赔偿。",
+        },
+      ],
+    } satisfies KnowledgeSelection;
+    const repairSelection = {
+      knowledgeBaseId: "lynxon-product-knowledge",
+      policyId: "lynxon-video-content-policy-v1",
+      qaIds: ["repair-sites"],
+      assertions: [
+        {
+          claimId: "qualified-repair-sites",
+          text: "车辆可送至所属品牌4S店或国家认证的具备二类（含）以上维修资质的维修站。",
+        },
+      ],
+    } satisfies KnowledgeSelection;
+    const compile = (selection: KnowledgeSelection) => {
+      let ordinal = 0;
+      return new PlanCompiler({
+        now: () => new Date("2026-08-26T00:00:00.000Z"),
+        idFactory: () => String(++ordinal),
+      }).compile(
+        { brief: "A grounded product explainer.", knowledge: selection },
+        profiles.getRequired("fake-image2-video-v1"),
+        { knowledgeBinding: knowledge.compileSelection(selection) },
+      );
+    };
+
+    const waitingPlan = compile(waitingSelection);
+    const repairPlan = compile(repairSelection);
+
+    expect(waitingPlan.knowledgeBinding?.snapshot.revision).toBe(
+      "4be08769b2e3459075490c7ab31924178ab44cd8",
+    );
+    expect(waitingPlan.knowledgeBinding?.bindingHash).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
+    expect(waitingPlan.planId).toBe(repairPlan.planId);
+    expect(waitingPlan.planHash).not.toBe(repairPlan.planHash);
   });
 });

@@ -8,13 +8,18 @@ import type {
   GateDecisionInput,
   GenerateImageToVideoInput,
   ImageToVideoPlan,
+  KnowledgeQueryInput,
+  KnowledgeQueryResult,
   PipelineRun,
   PipelineStage,
   RerollRequest,
   StageRun,
   VideoHarnessError,
 } from "@pi-video-harness/contracts";
-import { VIDEO_HARNESS_ERROR_CODES } from "@pi-video-harness/contracts";
+import {
+  VIDEO_HARNESS_ERROR_CODES,
+  parseKnowledgeQueryResult,
+} from "@pi-video-harness/contracts";
 
 export interface VideoHarnessClientOptions {
   readonly baseUrl?: string | URL;
@@ -228,6 +233,18 @@ export class VideoHarnessClient {
 
   capabilities(signal?: AbortSignal): Promise<CapabilitiesView> {
     return this.#request("v1/capabilities", { signal });
+  }
+
+  async queryKnowledge(
+    input: KnowledgeQueryInput,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeQueryResult> {
+    const payload = await this.#request<unknown>("v1/knowledge/queries", {
+      method: "POST",
+      body: input,
+      signal,
+    });
+    return parseKnowledgeQueryResult(payload);
   }
 
   createPlan(

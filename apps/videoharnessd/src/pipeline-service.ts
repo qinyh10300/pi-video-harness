@@ -80,6 +80,22 @@ export class PipelineVideoHarnessService implements VideoHarnessService {
           schemaVersion: core.database.schemaVersion,
         },
       },
+      "product-knowledge":
+        core.knowledge.status === "healthy"
+          ? {
+              status: "ok",
+              metadata: {
+                knowledgeBaseId: core.knowledge.snapshot?.knowledgeBaseId,
+                policyId: core.knowledge.snapshot?.policyId,
+                revision: core.knowledge.snapshot?.revision,
+                corpusHash: core.knowledge.snapshot?.corpusHash,
+                policyHash: core.knowledge.snapshot?.policyHash,
+              },
+            }
+          : {
+              status: "not_configured",
+              message: "Pinned product knowledge is not configured",
+            },
     };
     for (const backend of core.backends) {
       checks[backend.backend] = {
@@ -141,8 +157,17 @@ export class PipelineVideoHarnessService implements VideoHarnessService {
         modelFallbackEnabled: false,
         automaticQualityReroll: capabilities.safety.automaticQualityReroll,
         planApprovalRequired: true,
+        knowledgeGroundingRequiredForProtectedContent: true,
+        knowledge: capabilities.knowledge,
       },
     };
+  }
+
+  async queryKnowledge(
+    input: Parameters<VideoHarnessService["queryKnowledge"]>[0],
+    _context: ServiceRequestContext,
+  ) {
+    return await this.#orchestrator.queryKnowledge(input);
   }
 
   async createPlan(

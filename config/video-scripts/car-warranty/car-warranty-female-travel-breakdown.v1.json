@@ -1,0 +1,144 @@
+{
+  "schemaVersion": "2",
+  "scriptId": "car-warranty-female-travel-breakdown",
+  "scriptVersion": 1,
+  "title": "自驾突发状况后的情绪转折",
+  "product": {
+    "name": "车援宝",
+    "category": "机动车辆延长保修服务",
+    "positioning": "公开产品事实仅采用知识绑定中的逐字批准文本。"
+  },
+  "format": {
+    "aspectRatio": "9:16",
+    "targetDurationSeconds": 15,
+    "language": "zh-CN"
+  },
+  "creative": {
+    "audience": "关注过保车辆维修成本与异地出行服务流程的成年车主",
+    "tone": "前段焦躁略夸张但可信，后段克制安心；不制造恐慌，不承诺承保、全额承担或免费维修。",
+    "visualStyle": "电影级写实商业短片，自然肤质，真实车辆与道路光影，轻戏剧化表演，9:16竖屏构图，24fps观感。",
+    "storyArc": [
+      "服务生效后等待期已满30日，车主开始自驾旅行。",
+      "旅途中车辆突发机械故障并安全停靠；她焦躁地查找规范报修方式。",
+      "她查看固定知识问答并按画面中的规范步骤操作，紧绷表情逐渐舒展。"
+    ]
+  },
+  "continuity": {
+    "protagonist": {
+      "ageYears": 30,
+      "description": "同一名明确成年的高挑美女车主，约175厘米，28至32岁观感，深棕色长卷发，自然精致妆容，珍珠耳钉。",
+      "wardrobe": "全片固定为香槟米色短袖方领修身包臀过膝连衣裙，剪裁性感但得体，面料完全不透明，领口不过低，开衩不过高，搭配米色低跟鞋。",
+      "emotionArc": [
+        "疑惑紧张：眉头迅速收紧，呼吸变急，一手扶额。",
+        "焦躁峰值：眉毛高抬后紧锁、眼睛微睁、下颌绷紧、鼻翼轻张，短暂闭眼摊手并轻跺脚；夸张但仍是真实生活表演。",
+        "明显释然：肩膀下沉、长呼气、眉眼舒展，最后露出克制安心的微笑。"
+      ]
+    },
+    "vehicle": "同一辆无品牌标识、无可识别车牌的深海军蓝中型SUV，车身、轮毂和内饰颜色始终一致。",
+    "setting": "晴朗傍晚的山间公路安全停车区，暖金色侧逆光，天气与光线方向连续。",
+    "constraints": [
+      "保持主角身份、脸部、身材比例、服装、发型和配饰一致。",
+      "保持车辆外观、停车位置、双闪状态、环境几何与光线连续。",
+      "驾驶阶段系安全带；车辆完全停稳并开启双闪后，主角才能查看手机或下车。",
+      "镜头保持平视或自然视角，不做低角度身体扫拍，不做胸部或臀部局部特写，不出现走光或性暗示动作。",
+      "手机界面的精确中文、问答和机构类型全部后期叠加；生成画面只保留干净UI框架。",
+      "故障只表现机械故障灯和安全停靠，不出现碰撞、爆炸、明火、浓烟或人员受伤。",
+      "只表现联系、报修和获取机构指引，不表现即时审批、人员瞬间到场、必然承担费用、免费维修或已经修复。"
+    ]
+  },
+  "compliance": {
+    "requiredDisclaimer": "本片为情景演绎。具体信息以实际产品说明和合同条款为准。",
+    "forbiddenClaims": [
+      "不得将车援宝描述为机动车保险、原厂质保、厂家官方服务或故障后的追溯保障。",
+      "不得使用全车全保、百分百赔付、免费维修、任何故障都能修、全国任意维修、秒批秒修等绝对化表述。",
+      "不得声称发生故障后临时签约即可处理本次故障，也不得遗漏30日等待期或签约时已有故障的限制。",
+      "不得把任意附近维修点描述为合规机构；仅可逐字使用知识绑定给出的维修机构范围。",
+      "不得暗示联系或提交报修后必然通过、维修费用必然全额承担或车辆一定即时修复。"
+    ]
+  },
+  "knowledge": {
+    "knowledgeBaseId": "lynxon-product-knowledge",
+    "policyId": "lynxon-video-content-policy-v1",
+    "qaIds": ["fault-reporting", "repair-sites"],
+    "assertions": [
+      {
+        "claimId": "waiting-period-30-days",
+        "text": "延长保修服务设有30日等待期，等待期内发生的故障不予赔偿。"
+      },
+      {
+        "claimId": "existing-fault-not-covered",
+        "text": "合同签署时车辆已经存在的故障所引起的维修费用不予承担。"
+      },
+      {
+        "claimId": "contact-before-repair",
+        "text": "车辆发生故障后，应先联系Lynxon，并在车辆抵达合规维修机构后按指引报修；未经允许不要拆解维修。"
+      },
+      {
+        "claimId": "qualified-repair-sites",
+        "text": "车辆可送至所属品牌4S店或国家认证的具备二类（含）以上维修资质的维修站。"
+      }
+    ]
+  },
+  "shots": [
+    {
+      "shotId": "shot-01",
+      "startSeconds": 0,
+      "durationSeconds": 5,
+      "purpose": "交代服务生效后的等待期已经届满，再用旅途中的突发故障建立冲突。",
+      "brief": "车辆途中突发异常，女车主已停入停车区并打开双闪；镜头从她下车时的紧张表情开始。",
+      "stillPrompt": "9:16竖屏，电影级写实摄影，晴朗傍晚的山间自驾公路安全停车区，一辆无品牌标识的深海军蓝中型SUV刚刚完全停稳，双闪灯亮起，驾驶门已经打开，无碰撞、无明火、无浓烟。固定主角为30岁高挑成年女性，约175厘米，深棕色长卷发，穿香槟米色短袖方领修身包臀过膝连衣裙，领口得体，面料不透明，开衩不过高，珍珠耳钉与米色低跟鞋。她正从驾驶位迈出，一只脚已经稳稳落地，眉头开始收紧。自然皮肤纹理，暖金色侧逆光，35mm中广角固定机位，中远景，人物与车辆完整，画面上方留标题空间，避免性感凝视与身体局部特写。",
+      "motionPrompt": "一个连续外景镜头，不切镜。0至2秒，已经完全停稳并开启双闪的SUV驾驶门继续打开，女车主稳稳下车；2至4秒，她关上车门，听到车内持续的故障提示音后眉头迅速紧锁、下颌绷紧，向车头看一眼；4至5秒，她停在驾驶门旁，一手扶额并重重呼气，呼吸略急。固定机位带极轻微真实手持感，动作连续自然，不使用手机。",
+      "negativePrompt": "underage person, nudity, transparent clothing, wardrobe change, identity drift, erotic pose, voyeuristic angle, low-angle body shot, chest close-up, buttocks close-up, unsafe driving, moving vehicle, phone use while driving, sudden cut, interior-exterior cut, collision, fire, smoke, facial deformation, grotesque face, extra limbs, extra fingers, flicker, text, logo, watermark",
+      "overlay": {
+        "headline": "生效后等待期已满30日",
+        "subline": "机械故障突然发生",
+        "footnote": "合同签署时车辆已经存在的故障所引起的维修费用不予承担。"
+      },
+      "voiceover": "延长保修服务设有30日等待期，等待期内发生的故障不予赔偿。",
+      "emotion": "从疑惑迅速转为紧张焦躁：眉头收紧、下颌绷住、一手扶额；幅度略大但符合真实突发状况。",
+      "knowledgeQaIds": [],
+      "knowledgeClaimIds": [
+        "waiting-period-30-days",
+        "existing-fault-not-covered"
+      ]
+    },
+    {
+      "shotId": "shot-02",
+      "startSeconds": 5,
+      "durationSeconds": 5,
+      "purpose": "以权威问答说明规范报修方式，将主角焦躁推到可信的情绪峰值。",
+      "brief": "女车主站在车辆安全一侧查看固定知识问答卡片；她在拨号前仍明显焦躁，但没有触碰车身或打开引擎盖。",
+      "stillPrompt": "延续完全相同的30岁高挑成年女性、香槟米色修身包臀过膝连衣裙、发型、配饰、深海军蓝SUV与傍晚停车区。9:16写实近中景的情绪起始帧：女车主站在车辆安全一侧，低头查看胸前的手机，空着的手自然下垂；眉头紧皱，下颌绷紧，表情带着焦急。手机界面只保留简洁问答卡片和拨号图标，不生成品牌标识、个人信息或难辨文字。背景车辆双闪持续，50mm镜头，浅景深，人物脸部清晰，避免低角度、胸部或臀部特写。",
+      "motionPrompt": "一个连续近中景镜头，不切镜。0至2秒，她低头查看手机上的固定知识问答卡片，眉毛突然抬起、眼睛微睁；2至4秒，她读完卡片上的步骤，下颌仍绷紧，迅速点按拨号图标；4至5秒，她短暂闭眼，空着的手无奈摊开并轻跺一下脚。镜头只做一次缓慢推近，情绪明显夸张但保持生活化，不尖叫、不崩溃。",
+      "negativePrompt": "underage person, nudity, transparent clothing, wardrobe change, identity drift, erotic pose, voyeuristic angle, low-angle body shot, chest close-up, buttocks close-up, sudden cut, unauthorized teardown, instant approval, screaming, horror, grotesque expression, facial deformation, caricature, extra limbs, extra fingers, unreadable policy text, insurance logo, text distortion, flicker, watermark",
+      "overlay": {
+        "headline": "问：车辆发生故障后应该怎样报修？",
+        "subline": "答：车辆发生故障后，应先联系Lynxon，并在车辆抵达合规维修机构后按指引报修；未经允许不要拆解维修。",
+        "footnote": "权威问答来自固定版本产品知识库"
+      },
+      "voiceover": "车辆发生故障后，应先联系Lynxon，并在车辆抵达合规维修机构后按指引报修；未经允许不要拆解维修。",
+      "emotion": "焦躁峰值：眉毛高抬后紧锁、眼睛微睁、下颌和嘴角绷紧、鼻翼轻张，闭眼摊手并轻跺脚；强烈但不狰狞变形。",
+      "knowledgeQaIds": ["fault-reporting"],
+      "knowledgeClaimIds": ["contact-before-repair"]
+    },
+    {
+      "shotId": "shot-03",
+      "startSeconds": 10,
+      "durationSeconds": 5,
+      "purpose": "以第二个权威问答说明合规维修机构范围，并完成从紧绷到舒展的表情反差。",
+      "brief": "女车主查看固定知识问答中的两个机构类型图标；画面只表现她从紧绷到舒展的情绪变化，不展示任何结果信息。",
+      "stillPrompt": "延续完全相同的30岁高挑成年女性、香槟米色修身包臀过膝连衣裙、发型、配饰、深海军蓝SUV、时间与地点。9:16电影级写实画面，一个连续近中景的起始帧：女车主站在驾驶门旁，双手在胸前拿着手机，眉头仍然紧皱；手机只显示无文字的两个简洁机构类型图标和空白地图框架，不出现任何结果标签。背景车辆保持停稳和双闪，周围没有突然出现的工作人员或车辆。暖金色光线，35mm半身镜头，画面中央和下方预留叠字安全区。",
+      "motionPrompt": "一个连续近中景镜头，不切镜。0至2秒，手机上的干净UI依次出现两个机构类型图标，不生成不可控文字；2至4秒，她读完机构类型指引，紧绷的肩膀明显下沉，长呼一口气，眉头慢慢打开、眼神变柔；4至5秒，她抬头露出安心微笑，镜头轻微拉远并稳定停留一秒，供后期叠加权威问答和短免责声明。画面不展示人员瞬间抵达或额外结果信息。",
+      "negativePrompt": "underage person, nudity, transparent clothing, wardrobe change, identity drift, erotic pose, voyeuristic angle, low-angle body shot, chest close-up, buttocks close-up, sudden cut, arbitrary repair shop, instant approval claim, free repair claim, cash payout, completed repair, technician suddenly appearing, tow truck suddenly appearing, insurance logo, distorted UI text, facial deformation, extra limbs, extra fingers, flicker, watermark",
+      "overlay": {
+        "headline": "问：车辆可以送到哪里维修？",
+        "subline": "答：车辆可送至所属品牌4S店或国家认证的具备二类（含）以上维修资质的维修站。",
+        "footnote": "具体信息以实际产品说明和合同条款为准"
+      },
+      "voiceover": "车辆可送至所属品牌4S店或国家认证的具备二类（含）以上维修资质的维修站。",
+      "emotion": "明显释然：肩膀下沉、长呼气、眉头打开、眼神变柔，最后微笑；与上一镜头形成清晰反差。",
+      "knowledgeQaIds": ["repair-sites"],
+      "knowledgeClaimIds": ["qualified-repair-sites"]
+    }
+  ]
+}

@@ -26,6 +26,7 @@ import {
   ShotSpecSchema,
   StillPromptSchema,
 } from "./prompt.js";
+import { KnowledgeBindingSchema } from "./knowledge.js";
 import { DurationSecondsSchema } from "./request.js";
 
 const ImageStageSpecCommonFields = {
@@ -192,6 +193,7 @@ export const ImageToVideoPlanSchema = Type.Object(
     candidatePolicy: CandidatePolicySchema,
     approvalPolicy: ApprovalPolicySchema,
     estimate: PipelineEstimateSchema,
+    knowledgeBinding: Type.Optional(KnowledgeBindingSchema),
     planHash: Sha256Schema,
     createdAt: TimestampSchema,
   },

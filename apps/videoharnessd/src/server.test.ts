@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   ArtifactDescriptor,
   ImageToVideoPlan,
+  KnowledgeQueryResult,
   PipelineRun,
 } from "@pi-video-harness/contracts";
 
@@ -41,6 +42,19 @@ const artifactFixture = {
   promptIds: [],
 } satisfies ArtifactDescriptor;
 
+const knowledgeResultFixture = {
+  status: "insufficient_evidence",
+  reason: "no_approved_answer",
+  snapshot: {
+    knowledgeBaseId: "lynxon-product-knowledge",
+    policyId: "lynxon-video-content-policy-v1",
+    repoUrl: "https://github.com/Futura-IO/web-Lynxon-product-knowledge.git",
+    revision: "4".repeat(40),
+    corpusHash: "c".repeat(64),
+    policyHash: "d".repeat(64),
+  },
+} satisfies KnowledgeQueryResult;
+
 const makeService = (
   overrides: Partial<VideoHarnessService> = {},
 ): VideoHarnessService => ({
@@ -57,6 +71,7 @@ const makeService = (
     limits: {},
     protections: { planApprovalRequired: true },
   }),
+  queryKnowledge: async () => knowledgeResultFixture,
   createPlan: async () => planFixture,
   getPlan: async () => planFixture,
   createDraftPipeline: async () => pipelineFixture,
@@ -189,6 +204,50 @@ describe("buildServer", () => {
     expect(createPlan.mock.calls[0]?.[1].pipelineProfileId).toBe(
       "fake-image2-video-v1",
     );
+
+    await server.close();
+  });
+
+  it("answers closed product-knowledge queries without accepting query parameters", async () => {
+    const queryKnowledge = vi.fn<VideoHarnessService["queryKnowledge"]>(
+      async () => knowledgeResultFixture,
+    );
+    const server = buildServer(
+      makeService({ queryKnowledge }),
+      loadServiceConfig({}),
+    );
+    const input = {
+      knowledgeBaseId: "lynxon-product-knowledge",
+      policyId: "lynxon-video-content-policy-v1",
+      question: "车辆发生故障后应该怎样报修？",
+    };
+
+    const answered = await server.inject({
+      method: "POST",
+      url: "/v1/knowledge/queries",
+      payload: input,
+    });
+    expect(answered.statusCode).toBe(200);
+    expect(answered.json()).toEqual(knowledgeResultFixture);
+    expect(queryKnowledge).toHaveBeenCalledExactlyOnceWith(
+      input,
+      expect.objectContaining({ requestId: expect.any(String) }),
+    );
+
+    const unknownBodyField = await server.inject({
+      method: "POST",
+      url: "/v1/knowledge/queries",
+      payload: { ...input, rewriteAnswer: true },
+    });
+    expect(unknownBodyField.statusCode).toBe(400);
+
+    const unexpectedQuery = await server.inject({
+      method: "POST",
+      url: "/v1/knowledge/queries?format=freeform",
+      payload: input,
+    });
+    expect(unexpectedQuery.statusCode).toBe(400);
+    expect(queryKnowledge).toHaveBeenCalledTimes(1);
 
     await server.close();
   });

@@ -1,0 +1,3 @@
+[submodule "knowledge/lynxon-product-knowledge"]
+	path = knowledge/lynxon-product-knowledge
+	url = https://github.com/Futura-IO/web-Lynxon-product-knowledge.git

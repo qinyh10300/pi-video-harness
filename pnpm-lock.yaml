@@ -44,6 +44,9 @@ importers:
       '@pi-video-harness/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@pi-video-harness/knowledge':
+        specifier: workspace:*
+        version: link:../../packages/knowledge
       '@pi-video-harness/media':
         specifier: workspace:*
         version: link:../../packages/media
@@ -93,6 +96,12 @@ importers:
         specifier: workspace:*
         version: link:../contracts
 
+  packages/knowledge:
+    dependencies:
+      '@pi-video-harness/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/media: {}
 
   packages/pipeline:
@@ -106,6 +115,9 @@ importers:
       '@pi-video-harness/core':
         specifier: workspace:*
         version: link:../core
+      '@pi-video-harness/knowledge':
+        specifier: workspace:*
+        version: link:../knowledge
       '@pi-video-harness/media':
         specifier: workspace:*
         version: link:../media

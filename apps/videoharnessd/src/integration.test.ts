@@ -65,6 +65,12 @@ describe("videoharnessd offline integration", () => {
         status: "ok",
         checks: {
           "fake-image": { status: "ok" },
+          "product-knowledge": {
+            status: "ok",
+            metadata: {
+              revision: "4be08769b2e3459075490c7ab31924178ab44cd8",
+            },
+          },
           "openai-image": { status: "not_configured" },
           comfyui: { status: "not_configured" },
         },
@@ -98,6 +104,28 @@ describe("videoharnessd offline integration", () => {
           "comfyui",
         ]),
       );
+
+      const knowledgeResponse = await server.inject({
+        method: "POST",
+        url: "/v1/knowledge/queries",
+        payload: {
+          knowledgeBaseId: "lynxon-product-knowledge",
+          policyId: "lynxon-video-content-policy-v1",
+          question: "车辆发生故障后应该怎样报修？",
+        },
+      });
+      expect(knowledgeResponse.statusCode).toBe(200);
+      expect(knowledgeResponse.json()).toMatchObject({
+        status: "answered",
+        answer: {
+          qaId: "fault-reporting",
+          canonicalAnswer:
+            "车辆发生故障后，应先联系Lynxon，并在车辆抵达合规维修机构后按指引报修；未经允许不要拆解维修。",
+        },
+        snapshot: {
+          revision: "4be08769b2e3459075490c7ab31924178ab44cd8",
+        },
+      });
 
       const planResponse = await server.inject({
         method: "POST",

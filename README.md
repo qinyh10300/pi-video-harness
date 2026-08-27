@@ -21,10 +21,13 @@ API、ComfyUI 和 Wan2.2 连接成一条可恢复、可观测、可追踪的首�
 `fake-image2-video-v1`，不需要 OpenAI Key、ComfyUI 或 GPU。
 
 ```bash
+git submodule update --init --recursive
 pnpm install --frozen-lockfile
 pnpm check
 pnpm dev
 ```
+
+第一条命令拉取被 gitlink 固定的产品知识快照；Harness 不会在启动时跟随上游分支更新，也不会安装或执行该外部仓库中的脚本。
 
 `pnpm dev` 和构建后的 `pnpm start` 都会在文件存在时自动加载仓库根目录的
 `.env`；不创建 `.env` 则使用安全默认值。需要覆盖默认值时可先执行
@@ -85,6 +88,43 @@ curl -sS \
          artifacts:[.artifacts[] | {kind,mimeType,current,accepted,contentPath}]}'
 ```
 
+## 版本化视频脚本
+
+多镜头创意脚本统一保存在
+[`config/video-scripts`](config/video-scripts/README.md)，按产品或活动分目录，文件名使用
+`<scriptId>.v<scriptVersion>.json`。`VideoScriptRegistry`
+会递归加载并校验版本、文件名、重复镜头和连续时间线；
+`createPlanInputsForVideoScript`
+会把每个脚本稳定展开为现有 Pipeline 可接受的多个 5 秒镜头输入。
+
+运行或登记活动时应显式保存
+`scriptId + scriptVersion + scriptHash`，不要隐式选择最新版本。当前示例是 15 秒竖屏的车延保旅行故障情景脚本。
+
+## 车援宝产品知识环
+
+力众华援产品知识库以只读 Git submodule 保存在
+[`knowledge/lynxon-product-knowledge`](knowledge/lynxon-product-knowledge/)，当前锁定完整commit
+`4be08769b2e3459075490c7ab31924178ab44cd8`。运行时 allowlist 只开放
+`01-PRODUCT/**/*.md`，且只有 `verification: verified` 并声明非空
+`assistant_contract`
+的文档进入权威 corpus；Harness 永不执行外部仓库中的 Agent 指令、安装钩子、构建脚本或服务。
+
+客户内容使用官方名称“车援宝”，产品类别是“机动车辆延长保修服务”，不能写成“车元宝”，也不能描述成保险。简单问答通过
+`POST /v1/knowledge/queries` 或 Pi 工具 `product_knowledge_qa`
+返回预先批准的确定性答案与引用；没有唯一证据时返回
+`insufficient_evidence`，不会自由补写。
+
+产品 Plan 绑定知识 snapshot、`corpusHash`、`policyHash` 和
+`bindingHash`，这些内容进入 `planHash`。`plan_approval`
+前，选中的问答/claim 必须作为独立逐字行进入 Brief；移除批准片段后，Brief 与 Prompt 中不允许残留品牌、品类、购买时点、保障/赔付/报修或绝对承诺话术，避免用一条合法引用或批准原文后缀夹带矛盾事实。`plan_approval`
+后、首个图片模型调用前，`knowledge_validate` 本地 Stage 验证绑定并写入
+`qa_report`；恢复以及每次图片预览、视频预览、最终视频和对应 reroll 的后端调用前都会复验。失败时 Pipeline 进入
+`needs_attention`，且不会提交紧随其后的模型调用；Backend 恢复会在启动、对账或导入结果前复验，最终验收前也会复验。首次校验失败时全部图片/视频调用数为零。详见
+[知识 Grounding 设计](docs/development/knowledge-grounding.md)和
+[知识源更新说明](knowledge/README.md)。
+
+这里的严格保障对象是受控脚本、Brief、overlay、voiceover 的公开产品事实与 Plan 绑定。它不证明知识库自身绝对正确，也不表示尚无 OCR/ASR 的真实画面文字和最终音轨已完成全量语义验证。
+
 最终状态应为 `completed`。`video_final` 的 MIME 是
 `application/vnd.pi-video-harness.fake-video+json`；这是可重复的测试契约，不能当作可播放视频。如果设置了
 `VIDEOHARNESS_AUTH_TOKEN`，所有 curl 请求还需添加
@@ -126,7 +166,7 @@ curl -sS \
 
 ### v0.1 目标范围
 
-- Pi 原生 Extension、Skill 和三个工具；
+- Pi 原生 Extension、Skill 和四个工具；
 - 独立运行的 `videoharnessd` Pipeline 服务；
 - `PipelineRun`、`StageRun`、`ApprovalGate` 和完整 Artifact lineage；
 - GPT-Image-2 新图、参考图编辑、候选选择与图片标准化；
@@ -160,6 +200,8 @@ curl -sS \
    `superseded`，不能再晋级。
 8. **只执行白名单工作流**：Agent 选择模式和预设，不直接操作节点 ID、权重文件名、任意路径或 ComfyUI
    graph。
+9. **产品事实先绑定再生成**：受保护产品内容必须来自固定知识快照和批准 policy；
+   `knowledge_validate` 未通过时不得触发图片或视频模型。
 
 ## 总体架构
 
@@ -172,6 +214,8 @@ Backends 代替。
 flowchart LR
     User[用户] --> Pi[Pi Agent / Extension]
     Pi --> API[VideoHarness API]
+    Knowledge[固定产品知识 submodule] --> Registry[Knowledge Registry]
+    Registry --> API
     API --> Planner[Plan Compiler]
     API --> Pipeline[Pipeline Orchestrator]
     Pipeline --> Store[(SQLite WAL + Outbox)]
@@ -198,17 +242,21 @@ Spark。ComfyUI 不直接暴露给 Pi 或公网。
 A 保留相同的四 Gate 交互与 lineage 结构，但图片/视频内容来自确定性 Fake
 Backend，不执行真实标准化或 ffmpeg QA。
 
-| 顺序 | Stage               | 产物                                    | 后续 Gate                                  |
-| ---- | ------------------- | --------------------------------------- | ------------------------------------------ |
-| 0    | `plan_compile`      | 结构化 Shot Plan 与成本/资源估算        | 创建 draft Pipeline 后打开 `plan_approval` |
-| 1    | `image_preview`     | 默认 2 张 GPT-Image-2 候选              | —                                          |
-| 2    | `image_validate`    | 技术 QA、排序和风险提示                 | `image_selection`                          |
-| 3    | `image_final`       | 选中图或通过 `images.edit` 得到的精修图 | 可选确认                                   |
-| 4    | `frame_normalize`   | 符合 `FrameSpec` 的 Wan 输入帧          | —                                          |
-| 5    | `video_preview`     | 默认 2 个 A14B 480P seed                | —                                          |
-| 6    | `video_validate`    | 视频 QA、排序和风险提示                 | `video_selection`                          |
-| 7    | `video_final`       | A14B 720P 原始成片                      | —                                          |
-| 8    | `video_postprocess` | MP4、poster、thumbnail、manifest        | `final_acceptance`                         |
+| 顺序 | Stage                | 产物                                    | 后续 Gate                                  |
+| ---- | -------------------- | --------------------------------------- | ------------------------------------------ |
+| 0    | `plan_compile`       | 结构化 Shot Plan 与成本/资源估算        | 创建 draft Pipeline 后打开 `plan_approval` |
+| 1    | `knowledge_validate` | 固定知识绑定的本地 `qa_report`          | 仅知识绑定 Plan；通过后才可调用模型        |
+| 2    | `image_preview`      | 默认 2 张 GPT-Image-2 候选              | —                                          |
+| 3    | `image_validate`     | 技术 QA、排序和风险提示                 | `image_selection`                          |
+| 4    | `image_final`        | 选中图或通过 `images.edit` 得到的精修图 | 可选确认                                   |
+| 5    | `frame_normalize`    | 符合 `FrameSpec` 的 Wan 输入帧          | —                                          |
+| 6    | `video_preview`      | 默认 2 个 A14B 480P seed                | —                                          |
+| 7    | `video_validate`     | 视频 QA、排序和风险提示                 | `video_selection`                          |
+| 8    | `video_final`        | A14B 720P 原始成片                      | —                                          |
+| 9    | `video_postprocess`  | MP4、poster、thumbnail、manifest        | `final_acceptance`                         |
+
+`knowledge_validate` 首次发生在 `plan_approval` 通过之后、`image_preview`
+之前，并在后续每个图片/视频后端入口复验；无知识绑定的通用视频不会创建该 Stage。
 
 自动 QA 负责硬校验、排序与风险提示，不代替审美选择。480P 预览晋级 720P 时复用首帧、Prompt 版本和被选 seed，但分辨率变化仍可能导致动作差异，不能承诺逐帧一致。
 
@@ -230,7 +278,7 @@ Backend，不执行真实标准化或 ffmpeg QA。
 ## Pi Package 与工具
 
 当前 `extensions/video-harness` 已提供独立 HTTP
-Client 和三个 Pi-compatible 工具定义。它们已有单元测试，但**尚未通过正式 Pi
+Client 和四个 Pi-compatible 工具定义。它们已有单元测试，但**尚未通过正式 Pi
 SDK 注册，也不是可直接 `pi install` 的已发布 Package**。目标 Package
 metadata 为：
 
@@ -247,11 +295,12 @@ metadata 为：
 
 ### 首版工具
 
-| 工具                 | 作用                                                                                             | 主要返回值                              |
-| -------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------- |
-| `video_generate`     | 编译计划，或用指定 Plan 创建不产生费用的 draft Pipeline                                          | `planId`、`pipelineId`、下一 Gate、估算 |
-| `video_job`          | `status`、`wait`、`select`、`approve`、`reject`、`request_changes`、`reroll`、`cancel`、`result` | 状态、候选、决定、错误或产物引用        |
-| `video_capabilities` | 查询图片/视频后端、模型、规格、Worker 和限制                                                     | 能力与健康快照                          |
+| 工具                   | 作用                                                                                             | 主要返回值                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| `video_generate`       | 编译计划，或用指定 Plan 创建不产生费用的 draft Pipeline                                          | `planId`、`pipelineId`、下一 Gate、估算 |
+| `video_job`            | `status`、`wait`、`select`、`approve`、`reject`、`request_changes`、`reroll`、`cancel`、`result` | 状态、候选、决定、错误或产物引用        |
+| `product_knowledge_qa` | 从固定 verified snapshot 回答批准范围内的简单产品问题                                            | canonical answer、引用或证据不足        |
+| `video_capabilities`   | 查询图片/视频后端、模型、规格、Worker 和限制                                                     | 能力与健康快照                          |
 
 Phase A 的 `video_job.wait` 使用有上限的 HTTP 长轮询：省略 `waitMs`
 时工具默认等待 25 秒，可显式设置为 0–30000 ms；`limit`
@@ -284,6 +333,7 @@ WAL、幂等、Outbox、本地 Artifact Store、有界事件长轮询和恢复�
 | ------------------------------------------------------------- | ------- | -------------------------------------------------------------------- |
 | `GET /v1/health`                                              | 已实现  | 服务、SQLite 和后端状态；真实后端显示 `not_configured`               |
 | `GET /v1/capabilities`                                        | 已实现  | 返回 Profile、规格、Gate 与安全限制                                  |
+| `POST /v1/knowledge/queries`                                  | 已实现  | 从固定 verified snapshot 返回确定性答案、引用或证据不足              |
 | `POST /v1/assets`                                             | 未实现  | 未来上传并校验参考图或输入素材                                       |
 | `POST /v1/plans`                                              | 已实现  | 创建并持久化无费用计划                                               |
 | `GET /v1/plans/:planId`                                       | 已实现  | 读取计划和版本                                                       |
@@ -319,12 +369,20 @@ interface GenerateImageToVideoInput {
   durationSeconds?: 5;
   imageCandidateCount?: number;
   previewCandidateCount?: number;
+  knowledge?: {
+    knowledgeBaseId: string;
+    policyId: string;
+    qaIds: string[];
+    assertions: Array<{ claimId: string; text: string }>;
+  };
   dryRun?: boolean;
   idempotencyKey?: string;
 }
 ```
 
-`dryRun`
+带受保护产品词的请求必须提供由 Registry 可验证的 `knowledge`
+selection；批准的答案、claim、引用和 snapshot 会编译为 `knowledgeBinding` 并进入
+`planHash`。`dryRun`
 只创建/验证计划并估算图片调用和 GPU 资源，不执行任何付费或 GPU 副作用。由于
 `POST /v1/assets` 尚未实现，Phase A 会在计划持久化前拒绝非空
 `referenceAssetIds`，不会让一个无法执行的引用图计划通过批准 Gate。
@@ -512,7 +570,9 @@ proxy 后；不得把未配鉴权的开发服务暴露到公网。`data/`
 - 计划、选图、选预览、最终验收四 Gate 的完整 Fake E2E；
 - 顶层请求重放、显式 reroll、取消和真实 Profile 拦截；
 - 提交意图持久化后注入崩溃，新 Orchestrator 恢复 Outbox 并继续到 Gate；
-- HTTP 路由/鉴权/错误边界、HTTP Client 和三个 Pi-compatible 工具定义。
+- 固定产品知识 snapshot、确定性问答、Plan
+  binding、模型调用前本地校验及失败隔离；
+- HTTP 路由/鉴权/错误边界、HTTP Client 和四个 Pi-compatible 工具定义。
 
 `pnpm test`
 默认只运行离线测试，不调用付费 API，也不下载大型权重。完整图片解码/ICC/alpha 标准化、ffmpeg/ffprobe
@@ -537,12 +597,17 @@ pi-video-harness/
 ├── packages/
 │   ├── contracts/                  # Schema、事件和错误类型
 │   ├── core/                       # SQLite WAL、事务、Outbox、幂等与恢复
+│   ├── knowledge/                  # 只读产品知识 Registry、问答与绑定校验
 │   ├── pipeline/                   # Stage、Gate、lineage 与 supersede
 │   ├── backend-fake/               # 确定性无网络图片/视频 Backend
 │   ├── backend-openai-image/       # 禁用的 GPT-Image-2 占位 Driver
 │   ├── backend-comfyui/            # 禁用的 A14B/ComfyUI 占位 Driver
 │   └── media/                      # Artifact Store、文件头/完整性检查
-├── config/pipelines/                  # 版本化 Fake 与保留的真实 Profile
+├── config/
+│   ├── knowledge/                  # 固定 snapshot、claims、Q&A 与 policy
+│   └── pipelines/                  # 版本化 Fake 与保留的真实 Profile
+├── knowledge/
+│   └── lynxon-product-knowledge/   # 固定 commit 的只读 Git submodule
 ├── docs/
 │   ├── adr/
 │   └── development/
@@ -607,6 +672,8 @@ reverse proxy 对外提供 HTTPS。`videoharnessd`
 - 初始化 TypeScript workspace 与 Pi-compatible 客户端/工具边界；
 - 定义 Plan、Pipeline、Stage、Gate、Artifact 和错误 schema；
 - 实现事务 Outbox、幂等、恢复、supersede 和 Fake Backends；
+- 接入固定产品知识 submodule、确定性 Q&A、Plan binding 与 `knowledge_validate`
+  Stage；
 - 建立格式检查、typecheck、unit/contract/E2E test 和可重复构建命令。
 
 验收：已通过。完整 Fake
